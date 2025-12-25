@@ -14,10 +14,9 @@
 
 pub mod amqp;
 pub mod broker;
-pub mod cluster;
 pub mod codec;
-pub mod journal;
 pub mod kafka;
 pub mod meta;
 pub mod mqtt;
 pub mod robust;
+pub mod storage;

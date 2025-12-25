@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::controller::call_broker::call::BrokerCallManager;
 use crate::{
-    controller::mqtt::call_broker::{
-        update_cache_by_add_subscribe, update_cache_by_delete_subscribe, MQTTInnerCallManager,
+    controller::call_broker::mqtt::{
+        update_cache_by_add_subscribe, update_cache_by_delete_subscribe,
     },
     core::error::MetaServiceError,
     raft::{
@@ -39,20 +40,20 @@ use std::sync::Arc;
 pub async fn delete_subscribe_by_req(
     raft_manager: &Arc<MultiRaftManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    mqtt_call_manager: &Arc<MQTTInnerCallManager>,
+    call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     req: &DeleteSubscribeRequest,
 ) -> Result<DeleteSubscribeReply, MetaServiceError> {
     let storage = MqttSubscribeStorage::new(rocksdb_engine_handler.clone());
     let subscribes = if !req.path.is_empty() {
-        match storage.get(&req.cluster_name, &req.client_id, &req.path)? {
+        match storage.get(&req.client_id, &req.path)? {
             Some(subscribe) => vec![subscribe],
             None => {
                 return Err(MetaServiceError::SubscribeDoesNotExist(req.path.clone()));
             }
         }
     } else {
-        storage.list_by_client_id(&req.cluster_name, &req.client_id)?
+        storage.list_by_client_id(&req.client_id)?
     };
 
     if subscribes.is_empty() {
@@ -63,8 +64,7 @@ pub async fn delete_subscribe_by_req(
     raft_manager.write_metadata(data).await?;
 
     for raw in subscribes {
-        update_cache_by_delete_subscribe(&req.cluster_name, mqtt_call_manager, client_pool, raw)
-            .await?;
+        update_cache_by_delete_subscribe(call_manager, client_pool, raw).await?;
     }
 
     Ok(DeleteSubscribeReply {})
@@ -72,11 +72,11 @@ pub async fn delete_subscribe_by_req(
 
 pub fn list_subscribe_by_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    req: &ListSubscribeRequest,
+    _req: &ListSubscribeRequest,
 ) -> Result<ListSubscribeReply, MetaServiceError> {
     let storage = MqttSubscribeStorage::new(rocksdb_engine_handler.clone());
     let subscribes = storage
-        .list_by_cluster(&req.cluster_name)?
+        .list_all()?
         .into_iter()
         .map(|raw| raw.encode())
         .collect::<Result<Vec<_>, _>>()?;
@@ -86,7 +86,7 @@ pub fn list_subscribe_by_req(
 
 pub async fn set_subscribe_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    mqtt_call_manager: &Arc<MQTTInnerCallManager>,
+    call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     req: &SetSubscribeRequest,
 ) -> Result<SetSubscribeReply, MetaServiceError> {
@@ -95,9 +95,7 @@ pub async fn set_subscribe_by_req(
 
     let subscribe = MqttSubscribe::decode(&req.subscribe)
         .map_err(|e| MetaServiceError::CommonError(e.to_string()))?;
-
-    update_cache_by_add_subscribe(&req.cluster_name, mqtt_call_manager, client_pool, subscribe)
-        .await?;
+    update_cache_by_add_subscribe(call_manager, client_pool, subscribe).await?;
 
     Ok(SetSubscribeReply {})
 }
@@ -131,10 +129,10 @@ pub async fn delete_auto_subscribe_rule_by_req(
 
 pub fn list_auto_subscribe_rule_by_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    req: &ListAutoSubscribeRuleRequest,
+    _req: &ListAutoSubscribeRuleRequest,
 ) -> Result<ListAutoSubscribeRuleReply, MetaServiceError> {
     let storage = MqttSubscribeStorage::new(rocksdb_engine_handler.clone());
-    let data = storage.list_auto_subscribe_rule(&req.cluster_name)?;
+    let data = storage.list_all_auto_subscribe_rules()?;
 
     let auto_subscribe_rules = data
         .into_iter()

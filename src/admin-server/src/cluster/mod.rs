@@ -88,18 +88,12 @@ pub async fn cluster_config_set(
     success_response("success")
 }
 
-pub async fn cluster_config_get(
-    State(state): State<Arc<HttpState>>,
-    Json(_params): Json<ClusterConfigGetReq>,
-) -> String {
+pub async fn cluster_config_get(State(state): State<Arc<HttpState>>) -> String {
     let broker_config = state.broker_cache.get_cluster_config().await;
     success_response(broker_config)
 }
 
-pub async fn cluster_info(
-    State(state): State<Arc<HttpState>>,
-    Json(_params): Json<serde_json::Value>,
-) -> String {
+pub async fn cluster_info(State(state): State<Arc<HttpState>>) -> String {
     let cluster_storage = ClusterStorage::new(state.client_pool.clone());
     let meta_data = match cluster_storage.meta_cluster_status().await {
         Ok(data) => data,

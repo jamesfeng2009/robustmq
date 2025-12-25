@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use super::cluster::un_register_node_by_req;
-use crate::controller::journal::call_node::JournalInnerCallManager;
+use crate::controller::call_broker::call::BrokerCallManager;
+use crate::core::cache::CacheManager;
 use crate::raft::manager::MultiRaftManager;
-use crate::{controller::mqtt::call_broker::MQTTInnerCallManager, core::cache::CacheManager};
 use common_base::tools::now_second;
 use grpc_clients::pool::ClientPool;
 use protocol::meta::meta_service_common::UnRegisterNodeRequest;
@@ -25,7 +25,6 @@ use tracing::{error, info};
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct NodeHeartbeatData {
-    pub cluster_name: String,
     pub node_id: u64,
     pub time: u64,
 }
@@ -35,8 +34,7 @@ pub struct BrokerHeartbeat {
     cluster_cache: Arc<CacheManager>,
     raft_manager: Arc<MultiRaftManager>,
     client_pool: Arc<ClientPool>,
-    journal_call_manager: Arc<JournalInnerCallManager>,
-    mqtt_call_manager: Arc<MQTTInnerCallManager>,
+    mqtt_call_manager: Arc<BrokerCallManager>,
 }
 
 impl BrokerHeartbeat {
@@ -45,59 +43,47 @@ impl BrokerHeartbeat {
         cluster_cache: Arc<CacheManager>,
         raft_manager: Arc<MultiRaftManager>,
         client_pool: Arc<ClientPool>,
-        journal_call_manager: Arc<JournalInnerCallManager>,
-        mqtt_call_manager: Arc<MQTTInnerCallManager>,
+        mqtt_call_manager: Arc<BrokerCallManager>,
     ) -> Self {
         BrokerHeartbeat {
             timeout_ms,
             cluster_cache,
             raft_manager,
             client_pool,
-            journal_call_manager,
             mqtt_call_manager,
         }
     }
 
     pub async fn start(&self) {
-        for cluster_name in self.cluster_cache.get_all_cluster_name() {
-            for node in self.cluster_cache.get_broker_node_by_cluster(&cluster_name) {
-                if let Some(heart_data) = self
-                    .cluster_cache
-                    .get_broker_heart(&cluster_name, node.node_id)
-                {
-                    let now_time = now_second();
-                    if now_time - heart_data.time >= self.timeout_ms / 1000
-                        && self.cluster_cache.get_cluster(&cluster_name).is_some()
+        for node in self.cluster_cache.node_list.iter() {
+            if let Some(heart_data) = self.cluster_cache.get_broker_heart(node.node_id) {
+                let now_time = now_second();
+                if now_time - heart_data.time >= self.timeout_ms / 1000 {
+                    let req = UnRegisterNodeRequest {
+                        node_id: node.node_id,
+                    };
+
+                    if let Err(e) = un_register_node_by_req(
+                        &self.cluster_cache,
+                        &self.raft_manager,
+                        &self.client_pool,
+                        &self.mqtt_call_manager,
+                        req,
+                    )
+                    .await
                     {
-                        let req = UnRegisterNodeRequest {
-                            node_id: node.node_id,
-                            cluster_name: cluster_name.to_string(),
-                        };
+                        error!("Heartbeat timeout, failed to delete node {} , error message :{},now time:{},report time:{}",
+                             node.node_id,e,now_time,heart_data.time);
+                        continue;
+                    }
 
-                        if let Err(e) = un_register_node_by_req(
-                            &self.cluster_cache,
-                            &self.raft_manager,
-                            &self.client_pool,
-                            &self.journal_call_manager,
-                            &self.mqtt_call_manager,
-                            req,
-                        )
-                        .await
-                        {
-                            error!("Heartbeat timeout, failed to delete node {} in cluster {}, error message :{},now time:{},report time:{}",
-                             node.node_id,cluster_name,e,now_time,heart_data.time);
-                            continue;
-                        }
-
-                        info!(
+                    info!(
                             "Heartbeat of the Node times out and is deleted from the cluster. Node ID: {}, node IP: {},now time:{},report time:{}, diff:{}, time_ms:{}",
                             node.node_id, node.node_ip, now_time, heart_data.time, (now_time - heart_data.time), self.timeout_ms
                         );
-                    }
-                } else {
-                    self.cluster_cache
-                        .report_broker_heart(&cluster_name, node.node_id);
                 }
+            } else {
+                self.cluster_cache.report_broker_heart(node.node_id);
             }
         }
     }

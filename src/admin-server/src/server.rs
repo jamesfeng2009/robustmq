@@ -110,21 +110,21 @@ impl AdminServer {
 
     fn common_route(&self) -> Router<Arc<HttpState>> {
         Router::new()
-            .route(STATUS_PATH, post(cluster_info))
+            .route(STATUS_PATH, get(cluster_info))
             // config
             .route(CLUSTER_CONFIG_SET_PATH, post(cluster_config_set))
-            .route(CLUSTER_CONFIG_GET_PATH, post(cluster_config_get))
+            .route(CLUSTER_CONFIG_GET_PATH, get(cluster_config_get))
             .route("/", get(index))
     }
 
     fn mqtt_route(&self) -> Router<Arc<HttpState>> {
         Router::new()
             // overview
-            .route(MQTT_OVERVIEW_PATH, post(overview))
+            .route(MQTT_OVERVIEW_PATH, get(overview))
             // monitor
-            .route(MQTT_MONITOR_PATH, post(monitor_data))
+            .route(MQTT_MONITOR_PATH, get(monitor_data))
             // client
-            .route(MQTT_CLIENT_LIST_PATH, post(client_list))
+            .route(MQTT_CLIENT_LIST_PATH, get(client_list))
             // session
             .route(MQTT_SESSION_LIST_PATH, post(session_list))
             // topic

@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::mqtt::call_broker::{
-    update_cache_by_delete_connector, MQTTInnerCallManager,
-};
-use crate::controller::mqtt::connector::status::ConnectorContext;
+use crate::controller::call_broker::call::BrokerCallManager;
+use crate::controller::call_broker::mqtt::update_cache_by_delete_connector;
+use crate::controller::connector::status::ConnectorContext;
 use crate::core::cache::CacheManager;
 use crate::core::error::MetaServiceError;
 use crate::raft::manager::MultiRaftManager;
@@ -36,7 +35,6 @@ use tracing::warn;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConnectorHeartbeat {
-    pub cluster_name: String,
     pub connector_name: String,
     pub last_heartbeat: u64,
 }
@@ -47,8 +45,7 @@ pub fn connector_heartbeat_by_req(
     req: &ConnectorHeartbeatRequest,
 ) -> Result<ConnectorHeartbeatReply, MetaServiceError> {
     for raw in &req.heatbeats {
-        if let Some(connector) = cache_manager.get_connector(&req.cluster_name, &raw.connector_name)
-        {
+        if let Some(connector) = cache_manager.connector_list.get(&raw.connector_name) {
             if connector.broker_id.is_none() {
                 warn!("connector:{} not register", raw.connector_name);
                 continue;
@@ -59,11 +56,7 @@ pub fn connector_heartbeat_by_req(
                 continue;
             }
 
-            cache_manager.report_connector_heartbeat(
-                &req.cluster_name,
-                &raw.connector_name,
-                raw.heartbeat_time,
-            );
+            cache_manager.report_connector_heartbeat(&raw.connector_name, raw.heartbeat_time);
         }
     }
     Ok(ConnectorHeartbeatReply {})
@@ -77,13 +70,13 @@ pub fn list_connectors_by_req(
     let storage = MqttConnectorStorage::new(rocksdb_engine_handler.clone());
 
     let connectors = if !req.connector_name.is_empty() {
-        match storage.get(&req.cluster_name, &req.connector_name)? {
+        match storage.get(&req.connector_name)? {
             Some(data) => vec![data.encode()?],
             None => Vec::new(),
         }
     } else {
         storage
-            .list(&req.cluster_name)?
+            .list()?
             .into_iter()
             .map(|raw| raw.encode())
             .collect::<Result<Vec<_>, _>>()?
@@ -95,7 +88,7 @@ pub fn list_connectors_by_req(
 pub async fn create_connector_by_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    mqtt_call_manager: &Arc<MQTTInnerCallManager>,
+    mqtt_call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     cache_manager: &Arc<CacheManager>,
     req: &CreateConnectorRequest,
@@ -103,10 +96,7 @@ pub async fn create_connector_by_req(
     let storage = MqttConnectorStorage::new(rocksdb_engine_handler.clone());
 
     // Check if connector already exists
-    if storage
-        .get(&req.cluster_name, &req.connector_name)?
-        .is_some()
-    {
+    if storage.get(&req.connector_name)?.is_some() {
         return Err(MetaServiceError::ConnectorAlreadyExist(
             req.connector_name.clone(),
         ));
@@ -127,7 +117,7 @@ pub async fn create_connector_by_req(
 pub async fn update_connector_by_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    mqtt_call_manager: &Arc<MQTTInnerCallManager>,
+    mqtt_call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     cache_manager: &Arc<CacheManager>,
     req: &UpdateConnectorRequest,
@@ -135,10 +125,7 @@ pub async fn update_connector_by_req(
     let storage = MqttConnectorStorage::new(rocksdb_engine_handler.clone());
 
     // Check if connector exists
-    if storage
-        .get(&req.cluster_name, &req.connector_name)?
-        .is_none()
-    {
+    if storage.get(&req.connector_name)?.is_none() {
         return Err(MetaServiceError::ConnectorNotFound(
             req.connector_name.clone(),
         ));
@@ -159,7 +146,7 @@ pub async fn update_connector_by_req(
 pub async fn delete_connector_by_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    mqtt_call_manager: &Arc<MQTTInnerCallManager>,
+    mqtt_call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     req: &DeleteConnectorRequest,
 ) -> Result<DeleteConnectorReply, MetaServiceError> {
@@ -167,14 +154,13 @@ pub async fn delete_connector_by_req(
 
     // Get connector to delete (must exist)
     let connector = storage
-        .get(&req.cluster_name, &req.connector_name)?
+        .get(&req.connector_name)?
         .ok_or_else(|| MetaServiceError::ConnectorNotFound(req.connector_name.clone()))?;
 
     let data = StorageData::new(StorageDataType::MqttDeleteConnector, encode_to_bytes(req));
     raft_manager.write_metadata(data).await?;
 
-    update_cache_by_delete_connector(&req.cluster_name, mqtt_call_manager, client_pool, connector)
-        .await?;
+    update_cache_by_delete_connector(mqtt_call_manager, client_pool, connector).await?;
 
     Ok(DeleteConnectorReply {})
 }

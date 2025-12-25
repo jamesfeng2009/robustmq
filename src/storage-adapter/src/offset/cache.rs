@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{offset::storage::OffsetStorageManager, storage::ShardOffset};
+use crate::offset::storage::OffsetStorageManager;
 use common_base::{
     error::common::CommonError,
     utils::serialize::{deserialize, serialize},
 };
 use dashmap::DashMap;
 use grpc_clients::pool::ClientPool;
+use metadata_struct::adapter::ShardOffset;
 use rocksdb_engine::{
     rocksdb::RocksDBEngine,
     storage::{base::get_cf_handle, family::DB_COLUMN_FAMILY_BROKER},
@@ -34,7 +35,7 @@ pub struct OffsetCacheManager {
 
 impl OffsetCacheManager {
     pub fn new(rocksdb_engine_handler: Arc<RocksDBEngine>, client_pool: Arc<ClientPool>) -> Self {
-        let offset_storage = OffsetStorageManager::new(client_pool.clone());
+        let offset_storage = OffsetStorageManager::new(client_pool);
         OffsetCacheManager {
             rocksdb_engine_handler,
             group_update_flag: DashMap::with_capacity(64),

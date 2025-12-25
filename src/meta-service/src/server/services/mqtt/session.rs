@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::mqtt::call_broker::{
-    update_cache_by_add_session, update_cache_by_delete_session, MQTTInnerCallManager,
+use crate::controller::call_broker::call::BrokerCallManager;
+use crate::controller::call_broker::mqtt::{
+    update_cache_by_add_session, update_cache_by_delete_session,
 };
-use crate::controller::mqtt::session_expire::ExpireLastWill;
+use crate::controller::session_expire::ExpireLastWill;
 use crate::core::cache::CacheManager;
 use crate::core::error::MetaServiceError;
 use crate::raft::manager::MultiRaftManager;
@@ -45,11 +46,11 @@ pub fn list_session_by_req(
     let mut sessions = Vec::new();
 
     if !req.client_id.is_empty() {
-        if let Some(data) = storage.get(&req.cluster_name, &req.client_id)? {
+        if let Some(data) = storage.get(&req.client_id)? {
             sessions.push(data.encode()?);
         }
     } else {
-        let data = storage.list(&req.cluster_name)?;
+        let data = storage.list_all()?;
         sessions = data
             .into_iter()
             .map(|raw| raw.encode())
@@ -61,7 +62,7 @@ pub fn list_session_by_req(
 
 pub async fn create_session_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<MQTTInnerCallManager>,
+    call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     req: &CreateSessionRequest,
 ) -> Result<CreateSessionReply, MetaServiceError> {
@@ -69,14 +70,14 @@ pub async fn create_session_by_req(
     raft_manager.write_mqtt(data).await?;
 
     let session = MqttSession::decode(&req.session)?;
-    update_cache_by_add_session(&req.cluster_name, call_manager, client_pool, session).await?;
+    update_cache_by_add_session(call_manager, client_pool, session).await?;
 
     Ok(CreateSessionReply {})
 }
 
 pub async fn update_session_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<MQTTInnerCallManager>,
+    call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     req: &UpdateSessionRequest,
@@ -85,8 +86,8 @@ pub async fn update_session_by_req(
     raft_manager.write_mqtt(data).await?;
 
     let storage = MqttSessionStorage::new(rocksdb_engine_handler.clone());
-    if let Some(session) = storage.get(&req.cluster_name, &req.client_id)? {
-        update_cache_by_add_session(&req.cluster_name, call_manager, client_pool, session).await?;
+    if let Some(session) = storage.get(&req.client_id)? {
+        update_cache_by_add_session(call_manager, client_pool, session).await?;
     }
 
     Ok(UpdateSessionReply {})
@@ -94,7 +95,7 @@ pub async fn update_session_by_req(
 
 pub async fn delete_session_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<MQTTInnerCallManager>,
+    call_manager: &Arc<BrokerCallManager>,
     client_pool: &Arc<ClientPool>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     cache_manager: &Arc<CacheManager>,
@@ -102,30 +103,23 @@ pub async fn delete_session_by_req(
 ) -> Result<DeleteSessionReply, MetaServiceError> {
     let session_storage = MqttSessionStorage::new(rocksdb_engine_handler.clone());
     let session = session_storage
-        .get(&req.cluster_name, &req.client_id)?
+        .get(&req.client_id)?
         .ok_or_else(|| MetaServiceError::SessionDoesNotExist(req.client_id.clone()))?;
 
     // Check for last will message and schedule expiration
     let will_storage = MqttLastWillStorage::new(rocksdb_engine_handler.clone());
-    if let Some(will_message) = will_storage.get(&req.cluster_name, &req.client_id)? {
+    if let Some(will_message) = will_storage.get(&req.client_id)? {
         let delay = session.last_will_delay_interval.unwrap_or_default();
         cache_manager.add_expire_last_will(ExpireLastWill {
-            client_id: will_message.client_id.clone(),
+            client_id: will_message.client_id,
             delay_sec: now_second() + delay,
-            cluster_name: req.cluster_name.clone(),
         });
     }
 
     let data = StorageData::new(StorageDataType::MqttDeleteSession, encode_to_bytes(req));
     raft_manager.write_mqtt(data).await?;
 
-    update_cache_by_delete_session(
-        &req.cluster_name,
-        call_manager,
-        client_pool,
-        session.clone(),
-    )
-    .await?;
+    update_cache_by_delete_session(call_manager, client_pool, session.clone()).await?;
 
     Ok(DeleteSessionReply {})
 }
@@ -151,7 +145,7 @@ pub async fn get_last_will_message_by_req(
     let storage = MqttLastWillStorage::new(rocksdb_engine_handler.clone());
 
     let message = storage
-        .get(&req.cluster_name, &req.client_id)?
+        .get(&req.client_id)?
         .map(|will| will.encode())
         .transpose()?
         .unwrap_or_default();

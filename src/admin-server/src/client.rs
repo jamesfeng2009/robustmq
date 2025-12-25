@@ -139,7 +139,7 @@ impl AdminHttpClient {
     }
 
     /// Make a GET request (for the root endpoint)
-    pub async fn get(&self, endpoint: &str) -> Result<String, HttpClientError> {
+    pub async fn get_raw(&self, endpoint: &str) -> Result<String, HttpClientError> {
         let url = self.build_url(endpoint)?;
 
         let response = self.client.get(&url).send().await?;
@@ -155,6 +155,87 @@ impl AdminHttpClient {
         }
 
         Ok(response_text)
+    }
+
+    pub async fn get<R>(&self, endpoint: &str) -> Result<R, HttpClientError>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let url = self.build_url(endpoint)?;
+
+        let response = self.client.get(&url).send().await?;
+
+        let status = response.status();
+        let response_text = response.text().await?;
+
+        if !status.is_success() {
+            return Err(HttpClientError::ServerError {
+                code: status.as_u16() as u64,
+                message: response_text,
+            });
+        }
+
+        // Try to parse as AdminServerResponse first
+        match serde_json::from_str::<AdminServerResponse<R>>(&response_text) {
+            Ok(api_response) => {
+                if api_response.code == 0 {
+                    Ok(api_response.data)
+                } else {
+                    Err(HttpClientError::ServerError {
+                        code: api_response.code,
+                        message: format!("Server error code: {}", api_response.code),
+                    })
+                }
+            }
+            Err(_) => {
+                // If not ApiResponse format, try to parse directly as the expected type
+                serde_json::from_str::<R>(&response_text)
+                    .map_err(HttpClientError::JsonSerializationFailed)
+            }
+        }
+    }
+
+    pub async fn get_with_params<T, R>(
+        &self,
+        endpoint: &str,
+        params: &T,
+    ) -> Result<R, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        let url = self.build_url(endpoint)?;
+
+        let response = self.client.get(&url).query(params).send().await?;
+
+        let status = response.status();
+        let response_text = response.text().await?;
+
+        if !status.is_success() {
+            return Err(HttpClientError::ServerError {
+                code: status.as_u16() as u64,
+                message: response_text,
+            });
+        }
+
+        // Try to parse as AdminServerResponse first
+        match serde_json::from_str::<AdminServerResponse<R>>(&response_text) {
+            Ok(api_response) => {
+                if api_response.code == 0 {
+                    Ok(api_response.data)
+                } else {
+                    Err(HttpClientError::ServerError {
+                        code: api_response.code,
+                        message: format!("Server error code: {}", api_response.code),
+                    })
+                }
+            }
+            Err(_) => {
+                // If not ApiResponse format, try to parse directly as the expected type
+                serde_json::from_str::<R>(&response_text)
+                    .map_err(HttpClientError::JsonSerializationFailed)
+            }
+        }
     }
 
     /// Build full URL from endpoint
@@ -184,23 +265,20 @@ impl AdminHttpClient {
     /// Get service version information
     pub async fn get_version(&self) -> Result<String, HttpClientError> {
         // Use "/api" (no trailing slash) to avoid static file route conflict
-        self.get(&api_path("")).await
+        self.get_raw(&api_path("")).await
     }
 
     /// Get cluster status information
     pub async fn get_status(&self) -> Result<String, HttpClientError> {
-        let empty_request = serde_json::json!({});
-        self.post_raw(&api_path(STATUS_PATH), &empty_request).await
+        self.get_raw(&api_path(STATUS_PATH)).await
     }
 
     /// Get cluster overview
-    pub async fn get_cluster_overview<T>(&self) -> Result<T, HttpClientError>
+    pub async fn get_cluster_overview<R>(&self) -> Result<AdminServerResponse<R>, HttpClientError>
     where
-        T: for<'de> Deserialize<'de>,
+        R: for<'de> Deserialize<'de>,
     {
-        let empty_request = serde_json::json!({});
-        self.post(&api_path(MQTT_OVERVIEW_PATH), &empty_request)
-            .await
+        self.get(&api_path(MQTT_OVERVIEW_PATH)).await
     }
 
     /// Get client list
@@ -212,7 +290,8 @@ impl AdminHttpClient {
         T: Serialize,
         R: for<'de> Deserialize<'de>,
     {
-        self.post(&api_path(MQTT_CLIENT_LIST_PATH), request).await
+        self.get_with_params(&api_path(MQTT_CLIENT_LIST_PATH), request)
+            .await
     }
 
     /// Get session list
@@ -474,12 +553,8 @@ impl AdminHttpClient {
     }
 
     /// Set cluster configuration
-    pub async fn get_cluster_config<T>(&self, request: &T) -> Result<String, HttpClientError>
-    where
-        T: Serialize,
-    {
-        self.post_raw(&api_path(CLUSTER_CONFIG_GET_PATH), request)
-            .await
+    pub async fn get_cluster_config(&self) -> Result<String, HttpClientError> {
+        self.get_raw(&api_path(CLUSTER_CONFIG_GET_PATH)).await
     }
 
     /// Get flapping detection list
@@ -625,5 +700,48 @@ mod tests {
         let client_with_timeout =
             AdminHttpClient::with_timeout("http://localhost:8080", Duration::from_secs(10));
         assert_eq!(client_with_timeout.base_url, "http://localhost:8080");
+    }
+
+    #[tokio::test]
+    async fn test_get_with_params() {
+        use axum::{extract::Query, routing::get, Router};
+
+        #[derive(Deserialize, Serialize)]
+        struct TestParams {
+            key: String,
+        }
+
+        #[derive(Deserialize, Serialize, Debug, PartialEq)]
+        struct TestResponse {
+            value: String,
+        }
+
+        // Start a mock server
+        let app = Router::new().route(
+            "/test",
+            get(|Query(params): Query<TestParams>| async move {
+                let response = AdminServerResponse {
+                    code: 0,
+                    data: TestResponse { value: params.key },
+                };
+                axum::Json(response)
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Test the client
+        let client = AdminHttpClient::new(format!("http://{}", addr));
+        let params = TestParams {
+            key: "hello".to_string(),
+        };
+
+        let result: TestResponse = client.get_with_params("/test", &params).await.unwrap();
+        assert_eq!(result.value, "hello");
     }
 }

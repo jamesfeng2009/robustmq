@@ -91,28 +91,32 @@ impl Server {
             network_type: NetworkConnectionType::Tcp,
             proc_config,
             stop_sx: context.stop_sx.clone(),
-            broker_cache: context.broker_cache.clone(),
+            broker_cache: context.broker_cache,
         };
 
+        let name = "MQTT".to_string();
         // TCP Server
-        let tcp_server = TcpServer::new(context.clone());
+        let tcp_server = TcpServer::new(name.clone(), context.clone());
 
         // Tls Server
         context.network_type = NetworkConnectionType::Tls;
-        let tls_server = TcpServer::new(context.clone());
+        let tls_server = TcpServer::new(name.clone(), context.clone());
 
         // Websocket Server
-        let ws_server = WebSocketServer::new(WebSocketServerState {
-            ws_port: conf.mqtt_server.websocket_port,
-            wss_port: conf.mqtt_server.websockets_port,
-            command: command.clone(),
-            connection_manager: context.connection_manager.clone(),
-            stop_sx: context.stop_sx.clone(),
-        });
+        let ws_server = WebSocketServer::new(
+            name.clone(),
+            WebSocketServerState {
+                ws_port: conf.mqtt_server.websocket_port,
+                wss_port: conf.mqtt_server.websockets_port,
+                command: command.clone(),
+                connection_manager: context.connection_manager.clone(),
+                stop_sx: context.stop_sx.clone(),
+            },
+        );
 
         // QuicServer
         context.network_type = NetworkConnectionType::QUIC;
-        let quic_server = QuicServer::new(context);
+        let quic_server = QuicServer::new(name.clone(), context);
         Server {
             tcp_server,
             tls_server,

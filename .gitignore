@@ -20,6 +20,8 @@
 # Nextest artifacts
 .nextest/
 /target/nextest/
+src/admin-server/data/
+src/storage-engine/data/
 
 # Test data and temporary files
 /target/tmp/
@@ -174,7 +176,6 @@ vgcore.*
 *.valgrind
 
 # Core dumps
-core
 core.*
 
 # ====================

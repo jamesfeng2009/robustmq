@@ -161,7 +161,7 @@ pub async fn st_report_connected_event(context: StReportConnectedEventContext) {
                 if let Some(record) =
                     MqttMessage::build_system_topic_message(topic_name.clone(), data)
                 {
-                    write_topic_data(
+                    let _ = write_topic_data(
                         &context.message_storage_adapter,
                         &context.metadata_cache,
                         &context.client_pool,
@@ -203,7 +203,7 @@ pub async fn st_report_disconnected_event(context: StReportDisconnectedEventCont
                 if let Some(record) =
                     MqttMessage::build_system_topic_message(topic_name.clone(), data)
                 {
-                    write_topic_data(
+                    let _ = write_topic_data(
                         &context.message_storage_adapter,
                         &context.metadata_cache,
                         &context.client_pool,
@@ -237,7 +237,7 @@ pub async fn st_report_subscribed_event(context: StReportSubscribedEventContext)
                 ts: now_millis(),
                 subopts,
                 topic: filter.path,
-                protocol: format!("{:?}", network_connection.protocol.clone()),
+                protocol: format!("{:?}", network_connection.protocol),
                 client_id: context.connection.client_id.to_string(),
             };
             match serde_json::to_string(&event_data) {
@@ -250,7 +250,7 @@ pub async fn st_report_subscribed_event(context: StReportSubscribedEventContext)
                     if let Some(record) =
                         MqttMessage::build_system_topic_message(topic_name.clone(), data)
                     {
-                        write_topic_data(
+                        let _ = write_topic_data(
                             &context.message_storage_adapter,
                             &context.metadata_cache,
                             &context.client_pool,
@@ -276,7 +276,7 @@ pub async fn st_report_unsubscribed_event(context: StReportUnsubscribedEventCont
                 username: context.connection.login_user.clone(),
                 ts: now_millis(),
                 topic: path,
-                protocol: format!("{:?}", network_connection.protocol.clone()),
+                protocol: format!("{:?}", network_connection.protocol),
                 client_id: context.connection.client_id.to_string(),
             };
             match serde_json::to_string(&event_data) {
@@ -289,7 +289,7 @@ pub async fn st_report_unsubscribed_event(context: StReportUnsubscribedEventCont
                     if let Some(record) =
                         MqttMessage::build_system_topic_message(topic_name.clone(), data)
                     {
-                        write_topic_data(
+                        let _ = write_topic_data(
                             &context.message_storage_adapter,
                             &context.metadata_cache,
                             &context.client_pool,

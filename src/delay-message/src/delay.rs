@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use common_base::error::common::CommonError;
-use metadata_struct::adapter::{read_config::ReadConfig, record::Record};
-use storage_adapter::storage::{ArcStorageAdapter, ShardInfo};
+use metadata_struct::adapter::{read_config::ReadConfig, record::Record, ShardInfo};
+use std::sync::Arc;
+use storage_adapter::storage::ArcStorageAdapter;
 use tokio::{select, sync::broadcast};
 use tracing::{debug, info};
 
-use crate::{persist::recover_delay_queue, pop::pop_delay_queue, DelayMessageManager};
+use crate::{
+    persist::{recover_delay_queue, DELAY_QUEUE_INFO_SHARD_NAME},
+    pop::pop_delay_queue,
+    DelayMessageManager,
+};
 
 const DELAY_MESSAGE_SHARD_NAME_PREFIX: &str = "$delay-message-shard-";
 
@@ -114,18 +117,34 @@ pub(crate) async fn init_delay_message_shard(
     let mut created_count = 0;
     for i in 0..shard_num {
         let shard_name = get_delay_message_shard_name(i);
-        let results = message_storage_adapter.list_shard(&shard_name).await?;
-
+        let results = message_storage_adapter
+            .list_shard(Some(shard_name.clone()))
+            .await?;
         if results.is_empty() {
             let shard = ShardInfo {
                 shard_name: shard_name.clone(),
                 replica_num: 1,
-                ..Default::default()
             };
             message_storage_adapter.create_shard(&shard).await?;
             debug!("Created delay message shard: {}", shard_name);
             created_count += 1;
         }
+    }
+
+    let results = message_storage_adapter
+        .list_shard(Some(DELAY_QUEUE_INFO_SHARD_NAME.to_string()))
+        .await?;
+    if results.is_empty() {
+        let shard = ShardInfo {
+            shard_name: DELAY_QUEUE_INFO_SHARD_NAME.to_string(),
+            replica_num: 1,
+        };
+        message_storage_adapter.create_shard(&shard).await?;
+        debug!(
+            "Created delay message shard: {}",
+            DELAY_QUEUE_INFO_SHARD_NAME
+        );
+        created_count += 1;
     }
 
     info!(
@@ -142,7 +161,7 @@ pub(crate) fn get_delay_message_shard_name(no: u64) -> String {
 
 #[cfg(test)]
 mod test {
-    use metadata_struct::adapter::record::Record;
+    use metadata_struct::adapter::{record::Record, ShardInfo};
     use storage_adapter::storage::build_memory_storage_driver;
 
     use crate::{
@@ -176,7 +195,9 @@ mod test {
         assert!(res.is_ok());
 
         let shard_name = get_delay_message_shard_name(shard_num - 1);
-        let res = message_storage_adapter.list_shard(&shard_name).await;
+        let res = message_storage_adapter
+            .list_shard(Some(shard_name.clone()))
+            .await;
         assert!(res.is_ok());
         let res = res.unwrap();
         assert_eq!(res.len(), 1);
@@ -188,6 +209,13 @@ mod test {
         let message_storage_adapter = build_memory_storage_driver();
         let shard_name = "test".to_string();
         let data = Record::from_string("test".to_string());
+        message_storage_adapter
+            .create_shard(&ShardInfo {
+                shard_name: shard_name.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let res = persist_delay_message(&message_storage_adapter, &shard_name, data).await;
         assert!(res.is_ok());
         let offset = res.unwrap();

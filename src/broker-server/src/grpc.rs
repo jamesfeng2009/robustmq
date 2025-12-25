@@ -12,30 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cluster_service::ClusterInnerService;
+use crate::cluster_service::GrpcBrokerCommonService;
 use axum::http::{self};
 use common_base::error::common::CommonError;
+use common_base::role::{is_broker_node, is_engine_node, is_meta_node};
 use common_base::tools::now_millis;
 use common_config::broker::broker_config;
 use common_metrics::grpc::{extract_grpc_status_code, parse_grpc_path, record_grpc_request};
-use journal_server::server::grpc::admin::GrpcJournalServerAdminService;
-use journal_server::server::grpc::inner::GrpcJournalServerInnerService;
-use journal_server::JournalServerParams;
 use meta_service::server::service_common::GrpcPlacementService;
-use meta_service::server::service_journal::GrpcEngineService;
+use meta_service::server::service_engine::GrpcEngineService;
 use meta_service::server::service_mqtt::GrpcMqttService;
 use meta_service::MetaServiceServerParams;
 use mqtt_broker::broker::MqttBrokerServerParams;
 use mqtt_broker::server::inner::GrpcInnerServices;
-use protocol::broker::broker_mqtt_inner::mqtt_broker_inner_service_server::MqttBrokerInnerServiceServer;
-use protocol::cluster::cluster_status::cluster_service_server::ClusterServiceServer;
-use protocol::journal::journal_admin::journal_server_admin_service_server::JournalServerAdminServiceServer;
-use protocol::journal::journal_inner::journal_server_inner_service_server::JournalServerInnerServiceServer;
+use protocol::broker::broker_common::broker_common_service_server::BrokerCommonServiceServer;
+use protocol::broker::broker_mqtt::broker_mqtt_service_server::BrokerMqttServiceServer;
+use protocol::broker::broker_storage::broker_storage_service_server::BrokerStorageServiceServer;
 use protocol::meta::meta_service_common::meta_service_service_server::MetaServiceServiceServer;
 use protocol::meta::meta_service_journal::engine_service_server::EngineServiceServer;
 use protocol::meta::meta_service_mqtt::mqtt_service_server::MqttServiceServer;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use storage_engine::server::inner::GrpcBrokerStorageServerService;
+use storage_engine::StorageEngineParams;
 use tonic::transport::Server;
 use tower::{Layer, Service};
 use tracing::info;
@@ -43,7 +42,7 @@ use tracing::info;
 pub async fn start_grpc_server(
     place_params: MetaServiceServerParams,
     mqtt_params: MqttBrokerServerParams,
-    journal_params: JournalServerParams,
+    journal_params: StorageEngineParams,
     grpc_port: u32,
 ) -> Result<(), CommonError> {
     let ip = format!("0.0.0.0:{grpc_port}").parse()?;
@@ -60,12 +59,15 @@ pub async fn start_grpc_server(
         .layer(tonic_web::GrpcWebLayer::new())
         .layer(layer)
         .add_service(
-            ClusterServiceServer::new(ClusterInnerService::new(mqtt_params.broker_cache.clone()))
-                .max_decoding_message_size(grpc_max_decoding_message_size),
+            BrokerCommonServiceServer::new(GrpcBrokerCommonService::new(
+                mqtt_params.clone(),
+                journal_params.clone(),
+            ))
+            .max_decoding_message_size(grpc_max_decoding_message_size),
         );
 
     let config = broker_config();
-    if config.is_start_meta() {
+    if is_meta_node(&config.roles) {
         route = route
             .add_service(
                 MetaServiceServiceServer::new(get_place_inner_handler(&place_params))
@@ -81,23 +83,18 @@ pub async fn start_grpc_server(
             );
     }
 
-    if config.is_start_broker() {
+    if is_broker_node(&config.roles) {
         route = route.add_service(
-            MqttBrokerInnerServiceServer::new(get_mqtt_inner_handler(&mqtt_params))
+            BrokerMqttServiceServer::new(get_mqtt_inner_handler(&mqtt_params))
                 .max_decoding_message_size(grpc_max_decoding_message_size),
         );
     }
 
-    if config.is_start_journal() {
-        route = route
-            .add_service(
-                JournalServerAdminServiceServer::new(get_journal_admin_handler(&journal_params))
-                    .max_decoding_message_size(grpc_max_decoding_message_size),
-            )
-            .add_service(
-                JournalServerInnerServiceServer::new(get_journal_inner_handler(&journal_params))
-                    .max_decoding_message_size(grpc_max_decoding_message_size),
-            );
+    if is_engine_node(&config.roles) {
+        route = route.add_service(
+            BrokerStorageServiceServer::new(get_storage_engine_inner_handler(&journal_params))
+                .max_decoding_message_size(grpc_max_decoding_message_size),
+        );
     }
 
     route.serve(ip).await?;
@@ -110,8 +107,7 @@ fn get_place_inner_handler(place_params: &MetaServiceServerParams) -> GrpcPlacem
         place_params.cache_manager.clone(),
         place_params.rocksdb_engine_handler.clone(),
         place_params.client_pool.clone(),
-        place_params.journal_call_manager.clone(),
-        place_params.mqtt_call_manager.clone(),
+        place_params.call_manager.clone(),
     )
 }
 
@@ -120,7 +116,7 @@ fn get_place_mqtt_handler(place_params: &MetaServiceServerParams) -> GrpcMqttSer
         place_params.cache_manager.clone(),
         place_params.raft_manager.clone(),
         place_params.rocksdb_engine_handler.clone(),
-        place_params.mqtt_call_manager.clone(),
+        place_params.call_manager.clone(),
         place_params.client_pool.clone(),
     )
 }
@@ -130,7 +126,7 @@ fn get_place_engine_handler(place_params: &MetaServiceServerParams) -> GrpcEngin
         place_params.raft_manager.clone(),
         place_params.cache_manager.clone(),
         place_params.rocksdb_engine_handler.clone(),
-        place_params.journal_call_manager.clone(),
+        place_params.call_manager.clone(),
         place_params.client_pool.clone(),
     )
 }
@@ -139,20 +135,15 @@ fn get_mqtt_inner_handler(mqtt_params: &MqttBrokerServerParams) -> GrpcInnerServ
     GrpcInnerServices::new(
         mqtt_params.cache_manager.clone(),
         mqtt_params.subscribe_manager.clone(),
-        mqtt_params.connector_manager.clone(),
-        mqtt_params.schema_manager.clone(),
         mqtt_params.client_pool.clone(),
         mqtt_params.message_storage_adapter.clone(),
-        mqtt_params.metrics_cache_manager.clone(),
     )
 }
 
-fn get_journal_admin_handler(params: &JournalServerParams) -> GrpcJournalServerAdminService {
-    GrpcJournalServerAdminService::new(params.cache_manager.clone())
-}
-
-fn get_journal_inner_handler(params: &JournalServerParams) -> GrpcJournalServerInnerService {
-    GrpcJournalServerInnerService::new(
+fn get_storage_engine_inner_handler(
+    params: &StorageEngineParams,
+) -> GrpcBrokerStorageServerService {
+    GrpcBrokerStorageServerService::new(
         params.cache_manager.clone(),
         params.segment_file_manager.clone(),
         params.rocksdb_engine_handler.clone(),

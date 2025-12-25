@@ -29,16 +29,16 @@ tokio.workspace = true
 dashmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-third-driver.workspace = true
 mysql.workspace = true
 metadata-struct.workspace = true
 rocksdb.workspace = true
 rocksdb-engine.workspace = true
-journal-client.workspace = true
 futures.workspace = true
 opendal.workspace = true
 r2d2_mysql.workspace = true
 common-config.workspace = true
+bytes.workspace = true
+storage-engine.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

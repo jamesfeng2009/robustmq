@@ -36,7 +36,7 @@ use protocol::kafka::packet::{KafkaHeader, KafkaPacketWrapper};
 use protocol::mqtt::codec::MqttPacketWrapper;
 use protocol::robust::{
     KafkaWrapperExtend, MqttWrapperExtend, RobustMQPacket, RobustMQPacketWrapper, RobustMQProtocol,
-    RobustMQWrapperExtend,
+    RobustMQWrapperExtend, StorageEngineWrapperExtend,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -75,19 +75,20 @@ impl WebSocketServerState {
 }
 #[derive(Clone)]
 pub struct WebSocketServer {
+    name: String,
     state: WebSocketServerState,
 }
 
 impl WebSocketServer {
-    pub fn new(state: WebSocketServerState) -> Self {
-        WebSocketServer { state }
+    pub fn new(name: String, state: WebSocketServerState) -> Self {
+        WebSocketServer { name, state }
     }
 
     pub async fn start_ws(&self) -> ResultCommonError {
         let ip: SocketAddr = format!("0.0.0.0:{}", self.state.ws_port).parse()?;
         let app = routes_v1(self.state.clone());
 
-        info!("Broker WebSocket Server start success. addr:{}", ip);
+        info!("{} WebSocket Server start success. addr:{}", self.name, ip);
         axum_server::bind(ip)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
@@ -105,7 +106,10 @@ impl WebSocketServer {
         )
         .await?;
 
-        info!("Broker WebSocket TLS Server start success. addr:{}", ip);
+        info!(
+            "{} WebSocket TLS Server start success. addr:{}",
+            self.name, ip
+        );
         axum_server::bind_rustls(ip, tls_config)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
@@ -131,7 +135,7 @@ async fn ws_handler(
         String::from("Unknown Source")
     };
 
-    info!("websocket `{user_agent}` at {addr} connected.");
+    debug!("websocket `{user_agent}` at {addr} connected.");
     let codec = RobustMQCodec::new();
     ws.protocols(["mqtt", "mqttv3.1"])
         .on_upgrade(move |socket| {
@@ -239,6 +243,7 @@ async fn process_socket_packet_by_binary(
         let robust_packet = match packet {
             RobustMQCodecWrapper::KAFKA(pkg) => RobustMQPacket::KAFKA(pkg.packet),
             RobustMQCodecWrapper::MQTT(pkg) => RobustMQPacket::MQTT(pkg.packet),
+            RobustMQCodecWrapper::StorageEngine(pkg) => RobustMQPacket::StorageEngine(pkg),
         };
 
         if let Some(resp_pkg) = command.apply(&tcp_connection, addr, &robust_packet).await {
@@ -254,6 +259,7 @@ async fn process_socket_packet_by_binary(
                     header: KafkaHeader::Response(ResponseHeader::default()),
                     packet: pkg,
                 }),
+                RobustMQPacket::StorageEngine(pkg) => RobustMQCodecWrapper::StorageEngine(pkg),
             };
             codec.encode_data(resp_codec_wrapper, &mut response_buff)?;
 
@@ -268,6 +274,13 @@ async fn process_socket_packet_by_binary(
                     protocol: RobustMQProtocol::KAFKA,
                     extend: RobustMQWrapperExtend::KAFKA(KafkaWrapperExtend::default()),
                     packet: RobustMQPacket::KAFKA(pkg),
+                },
+                RobustMQPacket::StorageEngine(pkg) => RobustMQPacketWrapper {
+                    protocol: RobustMQProtocol::StorageEngine,
+                    extend: RobustMQWrapperExtend::StorageEngine(
+                        StorageEngineWrapperExtend::default(),
+                    ),
+                    packet: RobustMQPacket::StorageEngine(pkg),
                 },
             };
 

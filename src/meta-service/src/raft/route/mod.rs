@@ -52,8 +52,7 @@ impl DataRoute {
         let route_mqtt = DataRouteMqtt::new(rocksdb_engine_handler.clone(), cache_manager.clone());
         let route_cluster =
             DataRouteCluster::new(rocksdb_engine_handler.clone(), cache_manager.clone());
-        let route_journal =
-            DataRouteJournal::new(rocksdb_engine_handler.clone(), cache_manager.clone());
+        let route_journal = DataRouteJournal::new(rocksdb_engine_handler, cache_manager);
         DataRoute {
             route_kv,
             route_mqtt,
@@ -89,14 +88,6 @@ impl DataRoute {
                     .await?;
                 Ok(None)
             }
-
-            StorageDataType::ClusterAddCluster => {
-                self.route_cluster
-                    .add_cluster(storage_data.value.clone())
-                    .await?;
-                Ok(None)
-            }
-            StorageDataType::ClusterDeleteCluster => Ok(None),
 
             StorageDataType::ResourceConfigSet => {
                 self.route_cluster

@@ -86,7 +86,7 @@ fn gen_rewrite_topic(
         }
         return Ok(format!("{prefix}{rewrite_topic}"));
     }
-    Ok(input.to_owned())
+    Ok(input)
 }
 
 #[cfg(test)]
@@ -179,7 +179,6 @@ mod tests {
         let cache_manager = test_build_mqtt_cache_manager().await;
         for rule in rules.iter() {
             let rule = MqttTopicRewriteRule {
-                cluster: "default".to_string(),
                 action: TopicRewriteActionEnum::All.to_string(),
                 source_topic: rule.source.to_string(),
                 dest_topic: rule.destination.to_string(),

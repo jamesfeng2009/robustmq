@@ -12,16 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    offset::{cache::OffsetCacheManager, storage::OffsetStorageManager},
-    storage::ShardOffset,
-};
+use crate::offset::{cache::OffsetCacheManager, storage::OffsetStorageManager};
 use common_base::{
     error::{common::CommonError, ResultCommonError},
     tools::loop_select_ticket,
 };
 use common_config::broker::broker_config;
 use grpc_clients::pool::ClientPool;
+use metadata_struct::adapter::ShardOffset;
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::broadcast;
@@ -40,8 +38,7 @@ impl OffsetManager {
     pub fn new(client_pool: Arc<ClientPool>, rocksdb_engine_handler: Arc<RocksDBEngine>) -> Self {
         let conf = broker_config();
         let offset_storage = OffsetStorageManager::new(client_pool.clone());
-        let offset_cache_storage =
-            OffsetCacheManager::new(rocksdb_engine_handler.clone(), client_pool.clone());
+        let offset_cache_storage = OffsetCacheManager::new(rocksdb_engine_handler, client_pool);
         OffsetManager {
             enable_cache: conf.storage_offset.enable_cache,
             offset_storage,
