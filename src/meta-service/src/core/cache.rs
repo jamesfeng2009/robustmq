@@ -60,7 +60,7 @@ pub struct CacheManager {
     //(connector_name, ConnectorHeartbeat)
     pub connector_heartbeat: DashMap<String, ConnectorHeartbeat>,
 
-    // Journal
+    // Storage Engine
     //（shard_name, JournalShard）
     pub shard_list: DashMap<String, EngineShard>,
 
@@ -70,8 +70,8 @@ pub struct CacheManager {
     //（shard_name, (segment_no,JournalSegmentMetadata))
     pub segment_meta_list: DashMap<String, DashMap<u32, EngineSegmentMetadata>>,
 
-    //（shard_name, JournalShard）
-    pub wait_delete_shard_list: DashMap<String, EngineShard>,
+    //（shard_name, delete_time）
+    pub wait_delete_shard_list: DashMap<String, u64>,
 
     //（shard_name, JournalSegment)
     pub wait_delete_segment_list: DashMap<String, EngineSegment>,
@@ -161,19 +161,19 @@ pub fn load_cache(
     let shard_storage = ShardStorage::new(rocksdb_engine_handler.clone());
     let res = shard_storage.all_shard()?;
     for shard in res {
-        cache_manager.set_shard(&shard);
+        cache_manager.set_shard(shard);
     }
 
     let segment_storage = SegmentStorage::new(rocksdb_engine_handler.clone());
     let res = segment_storage.all_segment()?;
     for segment in res {
-        cache_manager.set_segment(&segment);
+        cache_manager.set_segment(segment);
     }
 
     let segment_metadata_storage = SegmentMetadataStorage::new(rocksdb_engine_handler.clone());
     let res = segment_metadata_storage.all_segment()?;
     for meta in res {
-        cache_manager.set_segment_meta(&meta);
+        cache_manager.set_segment_meta(meta);
     }
 
     // Topic
@@ -194,7 +194,7 @@ pub fn load_cache(
     let connector = MqttConnectorStorage::new(rocksdb_engine_handler.clone());
     let data = connector.list()?;
     for connector in data {
-        cache_manager.add_connector(&connector);
+        cache_manager.add_connector(connector);
     }
 
     Ok(())

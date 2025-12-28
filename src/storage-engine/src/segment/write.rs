@@ -14,16 +14,19 @@
 
 use crate::core::cache::StorageCacheManager;
 use crate::core::error::StorageEngineError;
-use crate::core::record::{StorageEngineRecord, StorageEngineRecordMetadata};
 use crate::segment::file::open_segment_write;
 use crate::segment::index::build::{save_index, BuildIndexRaw, IndexTypeEnum};
 use crate::segment::offset::{get_shard_offset, save_shard_offset};
-use crate::segment::scroll::{is_trigger_next_segment_scroll, trigger_next_segment_scroll};
+use crate::segment::scroll::{
+    is_start_or_end_offset, is_trigger_next_segment_scroll, trigger_next_segment_scroll,
+    trigger_update_start_or_end_info,
+};
 use crate::segment::SegmentIdentity;
 use bytes::Bytes;
 use common_base::tools::now_second;
 use dashmap::DashMap;
 use grpc_clients::pool::ClientPool;
+use metadata_struct::storage::storage_record::{StorageRecord, StorageRecordMetadata};
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::collections::HashMap;
 use std::hash::Hasher;
@@ -45,6 +48,7 @@ pub struct WriteChannelData {
 
 pub struct WriteChannelDataRecord {
     pub pkid: u64,
+    pub header: Option<Vec<metadata_struct::storage::storage_record::Header>>,
     pub key: Option<String>,
     pub value: Bytes,
     pub tags: Option<Vec<String>>,
@@ -147,19 +151,24 @@ impl IoWork {
         }
     }
 
-    pub fn get_offset(&self, shard_name: &str) -> Result<u64, StorageEngineError> {
+    pub fn get_offset(&self, shard_name: &str, segment: u32) -> Result<u64, StorageEngineError> {
         if let Some(offset) = self.offset_data.get(shard_name) {
             return Ok(*offset);
         }
 
-        let offset = get_shard_offset(&self.rocksdb_engine_handler, shard_name)?;
+        let offset = get_shard_offset(&self.rocksdb_engine_handler, shard_name, segment)?;
         self.offset_data.insert(shard_name.to_string(), offset);
         Ok(offset)
     }
 
-    pub fn save_offset(&self, shard_name: &str, offset: u64) -> Result<(), StorageEngineError> {
+    pub fn save_offset(
+        &self,
+        shard_name: &str,
+        segment: u32,
+        offset: u64,
+    ) -> Result<(), StorageEngineError> {
         self.offset_data.insert(shard_name.to_string(), offset);
-        save_shard_offset(&self.rocksdb_engine_handler, shard_name, offset)?;
+        save_shard_offset(&self.rocksdb_engine_handler, shard_name, segment, offset)?;
         Ok(())
     }
 }
@@ -210,8 +219,7 @@ pub fn create_io_thread(
                 continue;
             }
 
-            let mut write_data_list: HashMap<SegmentIdentity, Vec<StorageEngineRecord>> =
-                HashMap::new();
+            let mut write_data_list: HashMap<SegmentIdentity, Vec<StorageRecord>> = HashMap::new();
 
             let mut pkid_offset: HashMap<SegmentIdentity, HashMap<u64, u64>> = HashMap::new();
 
@@ -243,7 +251,7 @@ pub fn create_io_thread(
                 let offset = if let Some(offset) = tmp_offset_info.get(&shard_name) {
                     *offset
                 } else {
-                    let offset = match io_work.get_offset(&shard_name) {
+                    let offset = match io_work.get_offset(&shard_name, segment) {
                         Ok(offset) => offset,
                         Err(ex) => {
                             if let Err(e) = channel_data.resp_sx.send(SegmentWriteResp {
@@ -267,15 +275,16 @@ pub fn create_io_thread(
                 for row in channel_data.data_list {
                     let record_offset = start_offset;
                     shard_pkid_list.insert(row.pkid, record_offset);
-                    shard_list.push(StorageEngineRecord {
-                        metadata: StorageEngineRecordMetadata {
-                            offset: record_offset,
-                            shard: shard_name.clone(),
+                    shard_list.push(StorageRecord {
+                        metadata: StorageRecordMetadata::new(
+                            record_offset,
+                            &shard_name,
                             segment,
-                            key: row.key.clone(),
-                            tags: row.tags.clone(),
-                            create_t,
-                        },
+                            &row.header,
+                            &row.key,
+                            &row.tags,
+                            &row.value,
+                        ),
                         data: row.value,
                     });
 
@@ -369,7 +378,11 @@ fn success_save_offset(
     segment_iden: &SegmentIdentity,
 ) -> bool {
     if let Some(max_offset) = pkid_offset_list.values().max() {
-        if let Err(ex) = io_work.save_offset(&segment_iden.shard_name, *max_offset + 1) {
+        if let Err(ex) = io_work.save_offset(
+            &segment_iden.shard_name,
+            segment_iden.segment,
+            *max_offset + 1,
+        ) {
             call_error_response(shard_sender_list, segment_iden, &ex.to_string());
             return false;
         }
@@ -422,7 +435,7 @@ async fn batch_write(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     client_pool: &Arc<ClientPool>,
     segment_iden: &SegmentIdentity,
-    data_list: &[StorageEngineRecord],
+    data_list: &[StorageRecord],
     pkid_offset_list: &HashMap<u64, u64>,
     index_data: &[BuildIndexRaw],
 ) -> Result<Option<SegmentWriteResp>, StorageEngineError> {
@@ -477,6 +490,16 @@ async fn batch_write(
         }
     }
 
+    // trigger start/end info update
+    if is_start_or_end_offset(cache_manager, segment_iden, &offsets) {
+        trigger_update_start_or_end_info(
+            cache_manager.clone(),
+            client_pool.clone(),
+            segment_iden.clone(),
+            offsets.clone(),
+        );
+    }
+
     Ok(Some(SegmentWriteResp {
         offsets: Arc::new(pkid_offset_list.clone()),
         last_offset: *last_offset,
@@ -489,24 +512,27 @@ async fn batch_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::record::StorageEngineRecordMetadata;
     use crate::core::test::test_init_segment;
     use crate::segment::file::SegmentFile;
     use bytes::Bytes;
-    use common_base::tools::now_second;
+    use metadata_struct::storage::storage_record::StorageRecordMetadata;
 
-    fn create_test_records(count: usize, shard: &str, segment: u32) -> Vec<StorageEngineRecord> {
+    fn create_test_records(count: usize, shard: &str, segment: u32) -> Vec<StorageRecord> {
         (0..count)
-            .map(|i| StorageEngineRecord {
-                metadata: StorageEngineRecordMetadata {
-                    offset: i as u64,
-                    shard: shard.to_string(),
-                    segment,
-                    key: Some(format!("key-{}", i)),
-                    tags: Some(vec![format!("tag-{}", i)]),
-                    create_t: now_second(),
-                },
-                data: Bytes::from(format!("data-{}", i)),
+            .map(|i| {
+                let data = Bytes::from(format!("data-{}", i));
+                StorageRecord {
+                    metadata: StorageRecordMetadata::new(
+                        i as u64,
+                        shard,
+                        segment,
+                        &None,
+                        &Some(format!("key-{}", i)),
+                        &Some(vec![format!("tag-{}", i)]),
+                        &data,
+                    ),
+                    data,
+                }
             })
             .collect()
     }
@@ -567,7 +593,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let empty_records: Vec<StorageEngineRecord> = vec![];
+        let empty_records: Vec<StorageRecord> = vec![];
         let pkid_offset = HashMap::new();
         let client_poll = Arc::new(ClientPool::new(100));
         let index_data = Vec::new();
@@ -597,7 +623,7 @@ mod tests {
         let (segment_iden, cache_manager, fold, rocksdb) = test_init_segment().await;
 
         use crate::segment::offset::save_shard_offset;
-        save_shard_offset(&rocksdb, &segment_iden.shard_name, 0).unwrap();
+        save_shard_offset(&rocksdb, &segment_iden.shard_name, segment_iden.segment, 0).unwrap();
         let client_poll = Arc::new(ClientPool::new(100));
 
         let write_manager =
@@ -612,6 +638,7 @@ mod tests {
         for i in 0..10 {
             data_list.push(WriteChannelDataRecord {
                 pkid: i,
+                header: None,
                 key: Some(format!("key-{}", i)),
                 tags: Some(vec![format!("tag-{}", i)]),
                 value: Bytes::from(format!("data-{}", i)),
@@ -665,6 +692,7 @@ mod tests {
 
         let data_list = vec![WriteChannelDataRecord {
             pkid: 1,
+            header: None,
             key: Some("key-1".to_string()),
             tags: None,
             value: Bytes::from("data-1"),
@@ -692,7 +720,13 @@ mod tests {
             segment: 999,
         };
 
-        save_shard_offset(&rocksdb, &non_exist_segment.shard_name, 0).unwrap();
+        save_shard_offset(
+            &rocksdb,
+            &non_exist_segment.shard_name,
+            non_exist_segment.segment,
+            0,
+        )
+        .unwrap();
 
         let write_manager = WriteManager::new(
             rocksdb.clone(),
@@ -708,6 +742,7 @@ mod tests {
 
         let data_list = vec![WriteChannelDataRecord {
             pkid: 1,
+            header: None,
             key: Some("key-1".to_string()),
             tags: None,
             value: Bytes::from("data-1"),
@@ -734,6 +769,7 @@ mod tests {
 
         let data_list = vec![WriteChannelDataRecord {
             pkid: 1,
+            header: None,
             key: Some("key-1".to_string()),
             tags: None,
             value: Bytes::from("data-1"),

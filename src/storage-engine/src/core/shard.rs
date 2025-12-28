@@ -19,9 +19,8 @@ use crate::segment::file::data_fold_shard;
 use crate::segment::SegmentIdentity;
 use common_config::broker::broker_config;
 use grpc_clients::pool::ClientPool;
-use metadata_struct::adapter::ShardInfo;
+use metadata_struct::storage::adapter_offset::ShardInfo;
 use metadata_struct::storage::shard::EngineShardConfig;
-use protocol::broker::broker_storage::{DeleteShardFileRequest, GetShardDeleteStatusRequest};
 use protocol::meta::meta_service_journal::{CreateShardRequest, DeleteShardRequest};
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::fs::remove_dir_all;
@@ -34,16 +33,16 @@ use tracing::{error, info};
 pub fn delete_local_shard(
     cache_manager: Arc<StorageCacheManager>,
     rocksdb_engine_handler: Arc<RocksDBEngine>,
-    req: DeleteShardFileRequest,
+    shard_name: String,
 ) {
-    if !cache_manager.shards.contains_key(&req.shard_name) {
+    if !cache_manager.shards.contains_key(&shard_name) {
         return;
     }
 
     tokio::spawn(async move {
         // delete segment
-        for segment in cache_manager.get_segments_list_by_shard(&req.shard_name) {
-            let segment_iden = SegmentIdentity::new(&req.shard_name, segment.segment_seq);
+        for segment in cache_manager.get_segments_list_by_shard(&shard_name) {
+            let segment_iden = SegmentIdentity::new(&shard_name, segment.segment_seq);
             if let Err(e) =
                 delete_local_segment(&cache_manager, &rocksdb_engine_handler, &segment_iden).await
             {
@@ -52,13 +51,10 @@ pub fn delete_local_shard(
             }
         }
 
-        // delete shard
-        cache_manager.delete_shard(&req.shard_name);
-
         // delete file
         let conf = broker_config();
         for data_fold in conf.storage_runtime.data_path.iter() {
-            let shard_fold_name = data_fold_shard(&req.shard_name, data_fold);
+            let shard_fold_name = data_fold_shard(&shard_name, data_fold);
             if Path::new(&shard_fold_name).exists() {
                 match remove_dir_all(shard_fold_name) {
                     Ok(()) => {}
@@ -68,14 +64,18 @@ pub fn delete_local_shard(
                 }
             }
         }
-        info!("Shard {} deleted successfully", req.shard_name);
+
+        // delete shard
+        cache_manager.delete_shard(&shard_name);
+
+        info!("Shard {} deleted successfully", shard_name);
     });
 }
 
-pub fn is_delete_by_shard(req: &GetShardDeleteStatusRequest) -> Result<bool, StorageEngineError> {
+pub fn is_delete_by_shard(shard_name: &str) -> Result<bool, StorageEngineError> {
     let conf = broker_config();
     for data_fold in conf.storage_runtime.data_path.iter() {
-        let shard_fold_name = data_fold_shard(&req.shard_name, data_fold);
+        let shard_fold_name = data_fold_shard(shard_name, data_fold);
         if Path::new(&shard_fold_name).exists() {
             return Ok(false);
         }
@@ -105,7 +105,7 @@ pub async fn create_shard_to_place(
         shard_name: shard_name.to_string(),
         shard_config: config.encode()?,
     };
-    grpc_clients::meta::journal::call::create_shard(
+    grpc_clients::meta::storage::call::create_shard(
         client_pool,
         &conf.get_meta_service_addr(),
         request,
@@ -141,7 +141,7 @@ pub async fn delete_shard_to_place(
         shard_name: shard_name.to_string(),
     };
 
-    grpc_clients::meta::journal::call::delete_shard(
+    grpc_clients::meta::storage::call::delete_shard(
         client_pool,
         &conf.get_meta_service_addr(),
         request,

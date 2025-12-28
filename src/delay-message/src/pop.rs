@@ -16,8 +16,9 @@ use crate::DelayMessageManager;
 use common_base::error::common::CommonError;
 use futures::StreamExt;
 use metadata_struct::{
-    adapter::{read_config::ReadConfig, record::Record},
-    delay_info::DelayMessageInfo,
+    delay_info::DelayMessageInfo, storage::adapter_read_config::AdapterReadConfig,
+    storage::adapter_record::AdapterWriteRecord,
+    storage::convert::convert_engine_record_to_adapter,
 };
 use std::sync::Arc;
 use storage_adapter::storage::ArcStorageAdapter;
@@ -71,8 +72,8 @@ pub(crate) async fn read_offset_data(
     message_storage_adapter: &ArcStorageAdapter,
     shard_name: &str,
     offset: u64,
-) -> Result<Option<Record>, CommonError> {
-    let read_config = ReadConfig {
+) -> Result<Option<AdapterWriteRecord>, CommonError> {
+    let read_config = AdapterReadConfig {
         max_record_num: 1,
         max_size: 1024 * 1024 * 1024,
     };
@@ -81,8 +82,8 @@ pub(crate) async fn read_offset_data(
         .await?;
 
     for record in results {
-        if record.offset.unwrap() == offset {
-            return Ok(Some(record));
+        if record.metadata.offset == offset {
+            return Ok(Some(convert_engine_record_to_adapter(record)));
         }
     }
     Ok(None)
@@ -97,8 +98,8 @@ mod test {
     };
     use common_base::tools::unique_id;
     use metadata_struct::{
-        adapter::{record::Record, ShardInfo},
         delay_info::DelayMessageInfo,
+        storage::{adapter_offset::ShardInfo, adapter_record::AdapterWriteRecord},
     };
     use std::{sync::Arc, time::Duration};
     use storage_adapter::storage::build_memory_storage_driver;
@@ -116,7 +117,7 @@ mod test {
             .await
             .unwrap();
         for i in 0..100 {
-            let data = Record::from_string(format!("data{i}"));
+            let data = AdapterWriteRecord::from_string(format!("data{i}"));
             let res = message_storage_adapter.write(&shard_name, &data).await;
             assert!(res.is_ok());
         }
@@ -125,7 +126,7 @@ mod test {
             let res = read_offset_data(&message_storage_adapter, &shard_name, i).await;
             assert!(res.is_ok());
             let raw = res.unwrap().unwrap();
-            assert_eq!(raw.offset.unwrap(), i);
+            assert_eq!(raw.pkid, i);
 
             let d = String::from_utf8(raw.data.to_vec()).unwrap();
             assert_eq!(d, format!("data{i}"));
@@ -145,7 +146,7 @@ mod test {
             .unwrap();
 
         for i in 0..100 {
-            let data = Record::from_string(format!("data{i}"));
+            let data = AdapterWriteRecord::from_string(format!("data{i}"));
             let res = message_storage_adapter.write(&shard_name, &data).await;
             assert!(res.is_ok());
         }
@@ -178,7 +179,7 @@ mod test {
             let res = read_offset_data(&message_storage_adapter, &target_shard_name, i).await;
             assert!(res.is_ok());
             let raw = res.unwrap().unwrap();
-            assert_eq!(raw.offset.unwrap(), i);
+            assert_eq!(raw.pkid, i);
 
             let d = String::from_utf8(raw.data.to_vec()).unwrap();
             assert_eq!(d, format!("data{i}"));
@@ -210,7 +211,7 @@ mod test {
             .unwrap();
 
         for i in 0..10 {
-            let data = Record::from_string(format!("data{i}"));
+            let data = AdapterWriteRecord::from_string(format!("data{i}"));
             let res = delay_message_manager.send(&target_topic, 2, data).await;
             assert!(res.is_ok());
         }
@@ -223,7 +224,7 @@ mod test {
             let res = read_offset_data(&message_storage_adapter, &target_topic, i).await;
             assert!(res.is_ok());
             let raw = res.unwrap().unwrap();
-            assert_eq!(raw.offset.unwrap(), i);
+            assert_eq!(raw.pkid, i);
             let d = String::from_utf8(raw.data.to_vec()).unwrap();
             received_data.insert(d);
         }

@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use axum::async_trait;
 use metadata_struct::{
-    adapter::record::Record, mqtt::bridge::config_mysql::MySQLConnectorConfig,
-    mqtt::bridge::connector::MQTTConnector,
+    mqtt::bridge::config_mysql::MySQLConnectorConfig, mqtt::bridge::connector::MQTTConnector,
+    storage::adapter_record::AdapterWriteRecord,
 };
 use sqlx::{mysql::MySqlPoolOptions, MySql, Pool};
 use storage_adapter::storage::ArcStorageAdapter;
@@ -46,7 +46,11 @@ impl MySQLBridgePlugin {
             .await
     }
 
-    async fn single_insert(&self, records: &[Record], pool: &Pool<MySql>) -> ResultMqttBrokerError {
+    async fn single_insert(
+        &self,
+        records: &[AdapterWriteRecord],
+        pool: &Pool<MySql>,
+    ) -> ResultMqttBrokerError {
         for record in records {
             let payload = serde_json::to_string(record)?;
 
@@ -86,7 +90,11 @@ impl MySQLBridgePlugin {
         Ok(())
     }
 
-    async fn batch_insert(&self, records: &[Record], pool: &Pool<MySql>) -> ResultMqttBrokerError {
+    async fn batch_insert(
+        &self,
+        records: &[AdapterWriteRecord],
+        pool: &Pool<MySql>,
+    ) -> ResultMqttBrokerError {
         let mut values_placeholders = Vec::with_capacity(records.len());
         let mut bindings = Vec::with_capacity(records.len());
 
@@ -139,7 +147,7 @@ impl ConnectorSink for MySQLBridgePlugin {
 
     async fn send_batch(
         &self,
-        records: &[Record],
+        records: &[AdapterWriteRecord],
         pool: &mut Pool<MySql>,
     ) -> ResultMqttBrokerError {
         if records.is_empty() {

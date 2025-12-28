@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use crate::core::error::StorageEngineError;
-use crate::segment::keys::{
+use crate::segment::SegmentIdentity;
+use common_base::utils::serialize;
+use rocksdb::WriteBatch;
+use rocksdb_engine::keys::engine::{
     offset_segment_end, offset_segment_start, timestamp_segment_end, timestamp_segment_start,
 };
-use crate::segment::SegmentIdentity;
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use rocksdb_engine::storage::engine::{engine_get_by_engine, engine_save_by_engine};
 use rocksdb_engine::storage::family::DB_COLUMN_FAMILY_STORAGE_ENGINE;
@@ -36,9 +38,9 @@ impl SegmentIndexManager {
     pub fn save_start_offset(
         &self,
         segment_iden: &SegmentIdentity,
-        start_offset: u64,
+        start_offset: i64,
     ) -> Result<(), StorageEngineError> {
-        let key = offset_segment_start(segment_iden);
+        let key = offset_segment_start(&segment_iden.shard_name, segment_iden.segment);
         Ok(engine_save_by_engine(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -51,7 +53,7 @@ impl SegmentIndexManager {
         &self,
         segment_iden: &SegmentIdentity,
     ) -> Result<i64, StorageEngineError> {
-        let key = offset_segment_start(segment_iden);
+        let key = offset_segment_start(&segment_iden.shard_name, segment_iden.segment);
         if let Some(res) = engine_get_by_engine::<i64>(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -66,9 +68,9 @@ impl SegmentIndexManager {
     pub fn save_end_offset(
         &self,
         segment_iden: &SegmentIdentity,
-        end_offset: u64,
+        end_offset: i64,
     ) -> Result<(), StorageEngineError> {
-        let key = offset_segment_end(segment_iden);
+        let key = offset_segment_end(&segment_iden.shard_name, segment_iden.segment);
         Ok(engine_save_by_engine(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -81,7 +83,7 @@ impl SegmentIndexManager {
         &self,
         segment_iden: &SegmentIdentity,
     ) -> Result<i64, StorageEngineError> {
-        let key = offset_segment_end(segment_iden);
+        let key = offset_segment_end(&segment_iden.shard_name, segment_iden.segment);
         if let Some(res) = engine_get_by_engine::<i64>(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -96,9 +98,9 @@ impl SegmentIndexManager {
     pub fn save_start_timestamp(
         &self,
         segment_iden: &SegmentIdentity,
-        start_timestamp: u64,
+        start_timestamp: i64,
     ) -> Result<(), StorageEngineError> {
-        let key = timestamp_segment_start(segment_iden);
+        let key = timestamp_segment_start(&segment_iden.shard_name, segment_iden.segment);
         Ok(engine_save_by_engine(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -111,7 +113,7 @@ impl SegmentIndexManager {
         &self,
         segment_iden: &SegmentIdentity,
     ) -> Result<i64, StorageEngineError> {
-        let key = timestamp_segment_start(segment_iden);
+        let key = timestamp_segment_start(&segment_iden.shard_name, segment_iden.segment);
         if let Some(res) = engine_get_by_engine::<i64>(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -126,9 +128,9 @@ impl SegmentIndexManager {
     pub fn save_end_timestamp(
         &self,
         segment_iden: &SegmentIdentity,
-        end_timestamp: u64,
+        end_timestamp: i64,
     ) -> Result<(), StorageEngineError> {
-        let key = timestamp_segment_end(segment_iden);
+        let key = timestamp_segment_end(&segment_iden.shard_name, segment_iden.segment);
         Ok(engine_save_by_engine(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -141,7 +143,7 @@ impl SegmentIndexManager {
         &self,
         segment_iden: &SegmentIdentity,
     ) -> Result<i64, StorageEngineError> {
-        let key = timestamp_segment_end(segment_iden);
+        let key = timestamp_segment_end(&segment_iden.shard_name, segment_iden.segment);
         if let Some(res) = engine_get_by_engine::<i64>(
             &self.rocksdb_engine_handler,
             DB_COLUMN_FAMILY_STORAGE_ENGINE,
@@ -151,6 +153,41 @@ impl SegmentIndexManager {
         }
 
         Ok(-1)
+    }
+
+    pub fn batch_save_segment_metadata(
+        &self,
+        segment_iden: &SegmentIdentity,
+        start_offset: i64,
+        end_offset: i64,
+        start_timestamp: i64,
+        end_timestamp: i64,
+    ) -> Result<(), StorageEngineError> {
+        let cf = self
+            .rocksdb_engine_handler
+            .cf_handle(DB_COLUMN_FAMILY_STORAGE_ENGINE)
+            .ok_or_else(|| {
+                StorageEngineError::CommonErrorStr(format!(
+                    "Column family '{}' not found",
+                    DB_COLUMN_FAMILY_STORAGE_ENGINE
+                ))
+            })?;
+
+        let mut batch = WriteBatch::default();
+
+        let key = offset_segment_start(&segment_iden.shard_name, segment_iden.segment);
+        batch.put_cf(&cf, key, serialize::serialize(&start_offset)?);
+
+        let key = offset_segment_end(&segment_iden.shard_name, segment_iden.segment);
+        batch.put_cf(&cf, key, serialize::serialize(&end_offset)?);
+
+        let key = timestamp_segment_start(&segment_iden.shard_name, segment_iden.segment);
+        batch.put_cf(&cf, key, serialize::serialize(&start_timestamp)?);
+
+        let key = timestamp_segment_end(&segment_iden.shard_name, segment_iden.segment);
+        batch.put_cf(&cf, key, serialize::serialize(&end_timestamp)?);
+
+        Ok(self.rocksdb_engine_handler.write_batch(batch)?)
     }
 }
 
@@ -173,7 +210,7 @@ mod tests {
 
         let res = offset_index.get_start_offset(&segment_iden);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), start_offset as i64);
+        assert_eq!(res.unwrap(), start_offset);
 
         let end_offset = 1000;
         let res = offset_index.save_end_offset(&segment_iden, end_offset);
@@ -181,7 +218,7 @@ mod tests {
 
         let res = offset_index.get_end_offset(&segment_iden);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), end_offset as i64);
+        assert_eq!(res.unwrap(), end_offset);
     }
 
     #[test]
@@ -197,7 +234,7 @@ mod tests {
 
         let res = offset_index.get_start_offset(&segment_iden);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), start_offset as i64);
+        assert_eq!(res.unwrap(), start_offset);
 
         let end_offset = 1000;
         let res = offset_index.save_end_offset(&segment_iden, end_offset);
@@ -205,6 +242,6 @@ mod tests {
 
         let res = offset_index.get_end_offset(&segment_iden);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), end_offset as i64);
+        assert_eq!(res.unwrap(), end_offset);
     }
 }

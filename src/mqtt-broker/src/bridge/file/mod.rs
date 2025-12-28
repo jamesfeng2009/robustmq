@@ -21,8 +21,8 @@ use chrono::{DateTime, Local, Timelike};
 use metadata_struct::mqtt::bridge::config_local_file::RotationStrategy;
 use metadata_struct::mqtt::message::MqttMessage;
 use metadata_struct::{
-    adapter::record::Record, mqtt::bridge::config_local_file::LocalFileConnectorConfig,
-    mqtt::bridge::connector::MQTTConnector,
+    mqtt::bridge::config_local_file::LocalFileConnectorConfig,
+    mqtt::bridge::connector::MQTTConnector, storage::adapter_record::AdapterWriteRecord,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -194,7 +194,7 @@ impl ConnectorSink for FileBridgePlugin {
 
     async fn send_batch(
         &self,
-        records: &[Record],
+        records: &[AdapterWriteRecord],
         writer: &mut FileWriter,
     ) -> ResultMqttBrokerError {
         for record in records {
@@ -258,14 +258,14 @@ pub fn start_local_file_connector(
 
 #[cfg(test)]
 mod tests {
-    use common_base::{tools::now_second, utils::crc::calc_crc32};
+    use common_base::tools::now_second;
     use metadata_struct::{
-        adapter::{
-            record::{Header, Record},
-            ShardInfo,
-        },
         mqtt::bridge::{
             config_local_file::LocalFileConnectorConfig, connector::FailureHandlingStrategy,
+        },
+        storage::{
+            adapter_offset::ShardInfo,
+            adapter_record::{AdapterWriteRecord, Header},
         },
     };
     use std::{fs, path::PathBuf, sync::Arc, time::Duration};
@@ -298,8 +298,8 @@ mod tests {
         let mut test_data = vec![];
 
         for i in 0..1000 {
-            let record = Record {
-                offset: Some(i),
+            let record = AdapterWriteRecord {
+                pkid: i,
                 header: Some(vec![Header {
                     name: "test_name".to_string(),
                     value: "test_value".to_string(),
@@ -308,7 +308,6 @@ mod tests {
                 data: format!("test_data_{i}").as_bytes().to_vec().into(),
                 tags: Some(vec![]),
                 timestamp: now_second(),
-                crc_num: calc_crc32(format!("test_data_{i}").as_bytes()),
             };
 
             test_data.push(record);

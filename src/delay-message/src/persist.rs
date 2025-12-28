@@ -14,8 +14,8 @@
 
 use common_base::{error::common::CommonError, tools::now_second, utils::serialize};
 use metadata_struct::{
-    adapter::{read_config::ReadConfig, record::Record},
-    delay_info::DelayMessageInfo,
+    delay_info::DelayMessageInfo, storage::adapter_read_config::AdapterReadConfig,
+    storage::adapter_record::AdapterWriteRecord,
 };
 use std::{sync::Arc, time::Duration};
 use storage_adapter::storage::ArcStorageAdapter;
@@ -30,7 +30,7 @@ pub async fn persist_delay_info(
     message_storage_adapter: &ArcStorageAdapter,
     delay_info: DelayMessageInfo,
 ) -> Result<(), CommonError> {
-    let data = Record::from_bytes(serialize::serialize(&delay_info)?);
+    let data = AdapterWriteRecord::from_bytes(serialize::serialize(&delay_info)?);
     message_storage_adapter
         .write(DELAY_QUEUE_INFO_SHARD_NAME, &data)
         .await?;
@@ -40,7 +40,7 @@ pub async fn persist_delay_info(
 pub async fn recover_delay_queue(
     message_storage_adapter: &ArcStorageAdapter,
     delay_message_manager: &Arc<DelayMessageManager>,
-    read_config: ReadConfig,
+    read_config: AdapterReadConfig,
     _shard_num: u64,
 ) {
     let mut offset = 0;
@@ -63,7 +63,7 @@ pub async fn recover_delay_queue(
         }
 
         for record in data {
-            offset = record.offset.unwrap();
+            offset = record.metadata.offset;
 
             let delay_info = match serialize::deserialize::<DelayMessageInfo>(&record.data) {
                 Ok(delay_info) => delay_info,
@@ -146,8 +146,11 @@ mod test {
     };
     use common_base::{tools::unique_id, utils::serialize};
     use metadata_struct::{
-        adapter::{read_config::ReadConfig, record::Record, ShardInfo},
         delay_info::DelayMessageInfo,
+        storage::{
+            adapter_offset::ShardInfo, adapter_read_config::AdapterReadConfig,
+            adapter_record::AdapterWriteRecord,
+        },
     };
     use std::{sync::Arc, time::Duration};
     use storage_adapter::storage::build_memory_storage_driver;
@@ -195,7 +198,7 @@ mod test {
                 read_offset_data(&message_storage_adapter, DELAY_QUEUE_INFO_SHARD_NAME, i).await;
             assert!(res.is_ok());
             let raw = res.unwrap().unwrap();
-            assert_eq!(raw.offset.unwrap(), i);
+            assert_eq!(raw.pkid, i);
 
             let d = serialize::deserialize::<DelayMessageInfo>(&raw.data).unwrap();
             assert_eq!(d.target_shard_name, target_shard_name);
@@ -228,7 +231,7 @@ mod test {
             .await
             .unwrap();
         for i in 0..10 {
-            let data = Record::from_string(format!("data{i}"));
+            let data = AdapterWriteRecord::from_string(format!("data{i}"));
             // Use fixed delay to maintain order
             let res: Result<(), common_base::error::common::CommonError> =
                 delay_message_manager.send(&target_topic, 2, data).await;
@@ -249,7 +252,7 @@ mod test {
         );
 
         // build delay queue
-        let read_config = ReadConfig {
+        let read_config = AdapterReadConfig {
             max_record_num: 100,
             max_size: 1024 * 1024 * 1024,
         };
@@ -274,7 +277,7 @@ mod test {
             let res = read_offset_data(&message_storage_adapter, &target_topic, i).await;
             assert!(res.is_ok());
             let raw = res.unwrap().unwrap();
-            assert_eq!(raw.offset.unwrap(), i);
+            assert_eq!(raw.pkid, i);
 
             let d = String::from_utf8(raw.data.to_vec()).unwrap();
             received_data.insert(d);

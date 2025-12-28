@@ -18,18 +18,17 @@ use crate::{
 };
 use common_base::error::common::CommonError;
 use common_config::storage::{StorageAdapterConfig, StorageAdapterType};
-use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
+use storage_engine::{memory::engine::MemoryStorageEngine, rocksdb::engine::RocksDBStorageEngine};
 
 pub async fn build_message_storage_driver(
     _offset_manager: Arc<OffsetManager>,
-    db: Arc<RocksDBEngine>,
+    memory_storage_engine: Arc<MemoryStorageEngine>,
+    rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
     config: StorageAdapterConfig,
 ) -> Result<ArcStorageAdapter, CommonError> {
     let storage: ArcStorageAdapter = match config.storage_type {
-        StorageAdapterType::Memory => Arc::new(MemoryStorageAdapter::new(
-            config.memory_config.unwrap_or_default(),
-        )),
+        StorageAdapterType::Memory => Arc::new(MemoryStorageAdapter::new(memory_storage_engine)),
 
         // StorageAdapterType::Journal => Arc::new(
         //     JournalStorageAdapter::new(offset_manager, config.journal_config.unwrap_or_default())
@@ -39,7 +38,9 @@ pub async fn build_message_storage_driver(
         // StorageAdapterType::Mysql => Arc::new(MySQLStorageAdapter::new(
         //     config.mysql_config.unwrap_or_default(),
         // )?),
-        StorageAdapterType::RocksDB => Arc::new(RocksDBStorageAdapter::new(db)),
+        StorageAdapterType::RocksDB => {
+            Arc::new(RocksDBStorageAdapter::new(rocksdb_storage_engine.clone()))
+        }
 
         StorageAdapterType::S3 => {
             // Arc::new(S3StorageAdapter::new(config.s3_config.unwrap_or_default()))

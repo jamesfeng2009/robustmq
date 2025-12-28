@@ -27,7 +27,7 @@ pub struct EngineShard {
     pub config: EngineShardConfig,
     pub engine_type: EngineType,
     pub replica_num: u32,
-    pub create_time: u128,
+    pub create_time: u64,
 }
 
 impl EngineShard {
@@ -69,4 +69,5 @@ pub enum EngineType {
     #[default]
     Segment,
     Memory,
+    RocksDB,
 }

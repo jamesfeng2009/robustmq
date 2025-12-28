@@ -12,66 +12,145 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::core::{cache::StorageCacheManager, error::StorageEngineError};
-use grpc_clients::pool::ClientPool;
-use metadata_struct::{
-    adapter::record::Record,
-    storage::{segment::EngineSegment, shard::EngineShard},
+use crate::{
+    clients::{
+        manager::ClientConnectionManager,
+        packet::{build_write_req, write_resp_parse},
+    },
+    core::{cache::StorageCacheManager, error::StorageEngineError},
+    memory::engine::MemoryStorageEngine,
+    rocksdb::engine::RocksDBStorageEngine,
+    segment::{
+        write::{WriteChannelDataRecord, WriteManager},
+        SegmentIdentity,
+    },
 };
-use rocksdb_engine::rocksdb::RocksDBEngine;
+use common_base::utils::serialize::serialize;
+use common_config::broker::broker_config;
+use metadata_struct::{storage::adapter_record::AdapterWriteRecord, storage::shard::EngineType};
+use protocol::storage::codec::StorageEnginePacket;
 use std::sync::Arc;
 
-pub async fn _batch_write(
-    _client_pool: &Arc<ClientPool>,
+pub async fn batch_write(
+    write_manager: &Arc<WriteManager>,
     cache_manager: &Arc<StorageCacheManager>,
-    shard: &str,
-    _records: &[Record],
+    memory_storage_engine: &Arc<MemoryStorageEngine>,
+    rocksdb_storage_engine: &Arc<RocksDBStorageEngine>,
+    client_connection_manager: &Arc<ClientConnectionManager>,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
 ) -> Result<Vec<u64>, StorageEngineError> {
-    let _shard_info = if let Some(shard_info) = cache_manager.shards.get(shard) {
-        shard_info.clone()
-    } else {
-        return Err(StorageEngineError::ShardNotExist(shard.to_string()));
+    let Some(shard) = cache_manager.shards.get(shard_name) else {
+        return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
     };
+    let Some(active_segment) = cache_manager.get_active_segment(shard_name) else {
+        return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
+    };
+    let conf = broker_config();
 
-    // let segment = get_active_segment(client_pool, cache_manager, shard).await?;
-    // let config = broker_config();
-    // if segment.leader == config.broker_id {}
-    Ok(Vec::new())
+    let offsets = if conf.broker_id == active_segment.leader {
+        write_data_to_remote(
+            client_connection_manager,
+            active_segment.leader,
+            shard_name,
+            active_segment.segment_seq,
+            records,
+        )
+        .await?
+    } else {
+        match shard.engine_type {
+            EngineType::Memory => {
+                write_memory_to_local(memory_storage_engine, shard_name, records).await?
+            }
+            EngineType::RocksDB => {
+                write_rocksdb_to_local(rocksdb_storage_engine, shard_name, records).await?
+            }
+            EngineType::Segment => {
+                write_segment_to_local(
+                    write_manager,
+                    shard_name,
+                    active_segment.segment_seq,
+                    records,
+                )
+                .await?
+            }
+        }
+    };
+    Ok(offsets)
 }
 
-async fn _write_to_local(
-    _client_pool: &Arc<ClientPool>,
-    _cache_manager: &Arc<StorageCacheManager>,
-    _rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    _shard_info: &EngineShard,
+async fn write_data_to_remote(
+    client_connection_manager: &Arc<ClientConnectionManager>,
+    target_broker_id: u64,
+    shard_name: &str,
+    segment: u32,
+    records: &[AdapterWriteRecord],
 ) -> Result<Vec<u64>, StorageEngineError> {
-    // let req_body = WriteReqBody {};
-    // match shard_info.engine_type {
-    //     EngineType::Memory => {}
-    //     EngineType::Segment => {
-    //         let resp = write_data_req(
-    //             cache_manager,
-    //             rocksdb_engine_handler,
-    //             segment_file_manager,
-    //             client_pool,
-    //             &req_body,
-    //         )
-    //         .await?;
-    //     }
-    // }
-    Ok(Vec::new())
+    let messages = records
+        .iter()
+        .map(serialize)
+        .collect::<Result<Vec<_>, _>>()?;
+    let write_req = build_write_req(shard_name.to_string(), segment, messages);
+    let resp = client_connection_manager
+        .write_send(target_broker_id, StorageEnginePacket::WriteReq(write_req))
+        .await?;
+
+    match resp {
+        StorageEnginePacket::WriteResp(resp) => Ok(write_resp_parse(&resp)?),
+        packet => Err(StorageEngineError::ReceivedPacketError(
+            target_broker_id,
+            format!("Expected WriteResp, got {:?}", packet),
+        )),
+    }
 }
 
-async fn _write_to_leader() {}
+async fn write_memory_to_local(
+    memory_storage_engine: &Arc<MemoryStorageEngine>,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<u64>, StorageEngineError> {
+    let offsets = memory_storage_engine
+        .batch_write(shard_name, records)
+        .await?;
+    Ok(offsets)
+}
 
-async fn _get_active_segment(
-    _client_pool: &Arc<ClientPool>,
-    cache_manager: &Arc<StorageCacheManager>,
-    shard: &str,
-) -> Result<EngineSegment, StorageEngineError> {
-    if let Some(segment) = cache_manager.get_active_segment(shard) {
-        return Ok(segment);
-    }
+async fn write_rocksdb_to_local(
+    rocksdb_storage_engine: &Arc<RocksDBStorageEngine>,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<u64>, StorageEngineError> {
+    let offsets = rocksdb_storage_engine
+        .batch_write(shard_name, records)
+        .await?;
+    Ok(offsets)
+}
 
-    Err(StorageEngineError::NotActiveSegment(shard.to_string()))
+async fn write_segment_to_local(
+    write_manager: &Arc<WriteManager>,
+    shard_name: &str,
+    segment: u32,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<u64>, StorageEngineError> {
+    let segment_iden = SegmentIdentity::new(shard_name, segment);
+    let data_list = records
+        .iter()
+        .map(|record| WriteChannelDataRecord {
+            pkid: record.pkid,
+            header: record.header.as_ref().map(|headers| {
+                headers
+                    .iter()
+                    .map(|h| metadata_struct::storage::storage_record::Header {
+                        name: h.name.clone(),
+                        value: h.value.clone(),
+                    })
+                    .collect()
+            }),
+            key: record.key.clone(),
+            tags: record.tags.clone(),
+            value: record.data.clone(),
+        })
+        .collect();
+    let resp = write_manager.write(&segment_iden, data_list).await?;
+    Ok(resp.offsets.iter().map(|raw| *raw.1).collect())
 }

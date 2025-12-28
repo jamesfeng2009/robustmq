@@ -101,7 +101,13 @@ pub async fn test_base_write_data(
     let (segment_iden, cache_manager, fold, rocksdb_engine_handler) = test_init_segment().await;
 
     use crate::segment::offset::save_shard_offset;
-    save_shard_offset(&rocksdb_engine_handler, &segment_iden.shard_name, 0).unwrap();
+    save_shard_offset(
+        &rocksdb_engine_handler,
+        &segment_iden.shard_name,
+        segment_iden.segment,
+        0,
+    )
+    .unwrap();
 
     let client_poll = Arc::new(ClientPool::new(100));
 
@@ -121,6 +127,7 @@ pub async fn test_base_write_data(
     for i in 0..len {
         data_list.push(WriteChannelDataRecord {
             pkid: i,
+            header: None,
             key: Some(format!("key-{}", i)),
             tags: Some(vec![format!("tag-{}", i)]),
             value: Bytes::from(format!("data-{i}")),

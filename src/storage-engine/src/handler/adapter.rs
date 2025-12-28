@@ -16,24 +16,49 @@ use std::sync::Arc;
 
 use common_base::error::common::CommonError;
 use grpc_clients::pool::ClientPool;
-use metadata_struct::adapter::{read_config::ReadConfig, record::Record, ShardInfo, ShardOffset};
+use metadata_struct::storage::adapter_offset::{ShardInfo, ShardOffset};
+use metadata_struct::storage::adapter_read_config::AdapterReadConfig;
+use metadata_struct::storage::adapter_record::AdapterWriteRecord;
+use metadata_struct::storage::storage_record::StorageRecord;
 
-use crate::core::{
-    cache::StorageCacheManager,
-    shard::{create_shard_to_place, delete_shard_to_place},
+use crate::{
+    clients::manager::ClientConnectionManager,
+    core::{
+        cache::StorageCacheManager,
+        shard::{create_shard_to_place, delete_shard_to_place},
+        wirte::batch_write,
+    },
+    memory::engine::MemoryStorageEngine,
+    rocksdb::engine::RocksDBStorageEngine,
+    segment::write::WriteManager,
 };
 
 #[derive(Clone)]
 pub struct AdapterHandler {
     cache_manager: Arc<StorageCacheManager>,
+    memory_storage_engine: Arc<MemoryStorageEngine>,
+    rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
+    client_connection_manager: Arc<ClientConnectionManager>,
+    write_manager: Arc<WriteManager>,
     client_pool: Arc<ClientPool>,
 }
 
 impl AdapterHandler {
-    pub fn new(cache_manager: Arc<StorageCacheManager>, client_pool: Arc<ClientPool>) -> Self {
+    pub fn new(
+        cache_manager: Arc<StorageCacheManager>,
+        client_pool: Arc<ClientPool>,
+        memory_storage_engine: Arc<MemoryStorageEngine>,
+        rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
+        client_connection_manager: Arc<ClientConnectionManager>,
+        write_manager: Arc<WriteManager>,
+    ) -> Self {
         AdapterHandler {
             cache_manager,
             client_pool,
+            memory_storage_engine,
+            rocksdb_storage_engine,
+            client_connection_manager,
+            write_manager,
         }
     }
 
@@ -77,18 +102,31 @@ impl AdapterHandler {
 
     pub async fn batch_write(
         &self,
-        _shard: &str,
-        _records: &[Record],
+        shard: &str,
+        records: &[AdapterWriteRecord],
     ) -> Result<Vec<u64>, CommonError> {
-        Ok(Vec::new())
+        match batch_write(
+            &self.write_manager,
+            &self.cache_manager,
+            &self.memory_storage_engine,
+            &self.rocksdb_storage_engine,
+            &self.client_connection_manager,
+            shard,
+            records,
+        )
+        .await
+        {
+            Ok(offsets) => Ok(offsets),
+            Err(e) => Err(CommonError::CommonError(e.to_string())),
+        }
     }
 
     pub async fn read_by_offset(
         &self,
         _shard: &str,
         _offset: u64,
-        _read_config: &ReadConfig,
-    ) -> Result<Vec<Record>, CommonError> {
+        _read_config: &AdapterReadConfig,
+    ) -> Result<Vec<StorageRecord>, CommonError> {
         Ok(Vec::new())
     }
 
@@ -97,12 +135,16 @@ impl AdapterHandler {
         _shard: &str,
         _tag: &str,
         _start_offset: Option<u64>,
-        _read_config: &ReadConfig,
-    ) -> Result<Vec<Record>, CommonError> {
+        _read_config: &AdapterReadConfig,
+    ) -> Result<Vec<StorageRecord>, CommonError> {
         Ok(Vec::new())
     }
 
-    pub async fn read_by_key(&self, _shard: &str, _key: &str) -> Result<Vec<Record>, CommonError> {
+    pub async fn read_by_key(
+        &self,
+        _shard: &str,
+        _key: &str,
+    ) -> Result<Vec<StorageRecord>, CommonError> {
         Ok(Vec::new())
     }
 

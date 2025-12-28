@@ -27,8 +27,8 @@ use crate::{
     },
 };
 use common_base::tools::now_second;
-use metadata_struct::adapter::record::Record;
 use metadata_struct::mqtt::message::MqttMessage;
+use metadata_struct::storage::adapter_record::AdapterWriteRecord;
 use network_server::common::connection_manager::ConnectionManager;
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::{sync::Arc, time::Duration};
@@ -158,15 +158,7 @@ impl DirectlyPushManager {
         let model = get_push_model(&subscriber.client_id, &subscriber.topic_name);
 
         for record in data_list {
-            let record_offset = if let Some(offset) = record.offset {
-                offset
-            } else {
-                warn!(
-                    "Record without offset for subscriber [client_id: {}, topic: {}], skipping",
-                    subscriber.client_id, subscriber.topic_name
-                );
-                continue;
-            };
+            let record_offset = record.pkid;
 
             let success = match self.push_data(subscriber, &record, stop_sx).await {
                 Ok(pushed) => {
@@ -179,8 +171,8 @@ impl DirectlyPushManager {
                 Err(e) => {
                     if !client_unavailable_error(&e) {
                         warn!(
-                            "Directly push fail, offset [{:?}], error message:{}",
-                            record.offset, e
+                            "Directly push fail, pkid [{}], error message:{}",
+                            record.pkid, e
                         );
                     }
                     if model == PushModel::RetryFailure {
@@ -227,7 +219,7 @@ impl DirectlyPushManager {
     async fn push_data(
         &self,
         subscriber: &Subscriber,
-        record: &Record,
+        record: &AdapterWriteRecord,
         stop_sx: &Sender<bool>,
     ) -> Result<bool, MqttBrokerError> {
         let msg = MqttMessage::decode_record(record.clone())?;
@@ -281,7 +273,7 @@ impl DirectlyPushManager {
         &self,
         group: &str,
         topic_name: &str,
-    ) -> Result<Vec<Record>, MqttBrokerError> {
+    ) -> Result<Vec<AdapterWriteRecord>, MqttBrokerError> {
         let offset = self
             .message_storage
             .get_group_offset(group, topic_name)
