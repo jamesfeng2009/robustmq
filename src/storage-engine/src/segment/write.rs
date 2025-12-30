@@ -16,7 +16,7 @@ use crate::core::cache::StorageCacheManager;
 use crate::core::error::StorageEngineError;
 use crate::segment::file::open_segment_write;
 use crate::segment::index::build::{save_index, BuildIndexRaw, IndexTypeEnum};
-use crate::segment::offset::{get_shard_offset, save_shard_offset};
+use crate::segment::offset::{get_shard_cursor_offset, save_shard_cursor_offset};
 use crate::segment::scroll::{
     is_start_or_end_offset, is_trigger_next_segment_scroll, trigger_next_segment_scroll,
     trigger_update_start_or_end_info,
@@ -26,6 +26,7 @@ use bytes::Bytes;
 use common_base::tools::now_second;
 use dashmap::DashMap;
 use grpc_clients::pool::ClientPool;
+use metadata_struct::storage::adapter_read_config::AdapterWriteRespRow;
 use metadata_struct::storage::storage_record::{StorageRecord, StorageRecordMetadata};
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::collections::HashMap;
@@ -57,7 +58,7 @@ pub struct WriteChannelDataRecord {
 /// the response of the write request from the segment write thread
 #[derive(Default, Debug, Clone)]
 pub struct SegmentWriteResp {
-    pub offsets: Arc<HashMap<u64, u64>>,
+    pub offsets: Vec<AdapterWriteRespRow>,
     pub last_offset: u64,
     pub error: Option<String>,
 }
@@ -156,19 +157,14 @@ impl IoWork {
             return Ok(*offset);
         }
 
-        let offset = get_shard_offset(&self.rocksdb_engine_handler, shard_name, segment)?;
+        let offset = get_shard_cursor_offset(&self.rocksdb_engine_handler, shard_name, segment)?;
         self.offset_data.insert(shard_name.to_string(), offset);
         Ok(offset)
     }
 
-    pub fn save_offset(
-        &self,
-        shard_name: &str,
-        segment: u32,
-        offset: u64,
-    ) -> Result<(), StorageEngineError> {
+    pub fn save_offset(&self, shard_name: &str, offset: u64) -> Result<(), StorageEngineError> {
         self.offset_data.insert(shard_name.to_string(), offset);
-        save_shard_offset(&self.rocksdb_engine_handler, shard_name, segment, offset)?;
+        save_shard_cursor_offset(&self.rocksdb_engine_handler, shard_name, offset)?;
         Ok(())
     }
 }
@@ -378,11 +374,7 @@ fn success_save_offset(
     segment_iden: &SegmentIdentity,
 ) -> bool {
     if let Some(max_offset) = pkid_offset_list.values().max() {
-        if let Err(ex) = io_work.save_offset(
-            &segment_iden.shard_name,
-            segment_iden.segment,
-            *max_offset + 1,
-        ) {
+        if let Err(ex) = io_work.save_offset(&segment_iden.shard_name, *max_offset + 1) {
             call_error_response(shard_sender_list, segment_iden, &ex.to_string());
             return false;
         }
@@ -500,8 +492,17 @@ async fn batch_write(
         );
     }
 
+    let offsets: Vec<AdapterWriteRespRow> = pkid_offset_list
+        .iter()
+        .map(|raw| AdapterWriteRespRow {
+            pkid: *raw.0,
+            offset: *raw.1,
+            ..Default::default()
+        })
+        .collect();
+
     Ok(Some(SegmentWriteResp {
-        offsets: Arc::new(pkid_offset_list.clone()),
+        offsets,
         last_offset: *last_offset,
         ..Default::default()
     }))
@@ -622,8 +623,8 @@ mod tests {
     async fn write_manager_write_test() {
         let (segment_iden, cache_manager, fold, rocksdb) = test_init_segment().await;
 
-        use crate::segment::offset::save_shard_offset;
-        save_shard_offset(&rocksdb, &segment_iden.shard_name, segment_iden.segment, 0).unwrap();
+        use crate::segment::offset::save_shard_cursor_offset;
+        save_shard_cursor_offset(&rocksdb, &segment_iden.shard_name, 0).unwrap();
         let client_poll = Arc::new(ClientPool::new(100));
 
         let write_manager =
@@ -655,8 +656,8 @@ mod tests {
         assert_eq!(resp.offsets.len(), 10);
         assert_eq!(resp.last_offset, 9);
 
-        for i in 0..10 {
-            assert_eq!(*resp.offsets.get(&i).unwrap(), i);
+        for row in &resp.offsets {
+            assert_eq!(row.pkid, row.offset);
         }
 
         let segment_file =
@@ -708,7 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_manager_segment_not_exist_error_test() {
-        use crate::segment::offset::save_shard_offset;
+        use crate::segment::offset::save_shard_cursor_offset;
         use crate::segment::SegmentIdentity;
 
         let (_, cache_manager, _fold, rocksdb) = test_init_segment().await;
@@ -720,13 +721,7 @@ mod tests {
             segment: 999,
         };
 
-        save_shard_offset(
-            &rocksdb,
-            &non_exist_segment.shard_name,
-            non_exist_segment.segment,
-            0,
-        )
-        .unwrap();
+        save_shard_cursor_offset(&rocksdb, &non_exist_segment.shard_name, 0).unwrap();
 
         let write_manager = WriteManager::new(
             rocksdb.clone(),
