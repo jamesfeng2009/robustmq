@@ -30,7 +30,7 @@ use common_metrics::mqtt::event::{
     record_mqtt_subscribe_success, record_mqtt_unsubscribe_success,
 };
 use common_metrics::mqtt::time::record_packet_process_duration;
-use delay_message::DelayMessageManager;
+use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::connection::NetworkConnection;
 use network_server::command::Command;
@@ -48,7 +48,7 @@ use rocksdb_engine::rocksdb::RocksDBEngine;
 use schema_register::schema::SchemaRegisterManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use storage_adapter::storage::ArcStorageAdapter;
+use storage_adapter::driver::StorageDriverManager;
 use tracing::{debug, error};
 
 // S: message storage adapter
@@ -66,7 +66,7 @@ pub struct MQTTHandlerCommand {
 #[derive(Clone)]
 pub struct CommandContext {
     pub cache_manager: Arc<MQTTCacheManager>,
-    pub message_storage_adapter: ArcStorageAdapter,
+    pub storage_driver_manager: Arc<StorageDriverManager>,
     pub delay_message_manager: Arc<DelayMessageManager>,
     pub subscribe_manager: Arc<SubscribeManager>,
     pub client_pool: Arc<ClientPool>,
@@ -675,7 +675,7 @@ impl MQTTHandlerCommand {
             protocol: MqttProtocol::Mqtt3,
             cache_manager: context.cache_manager.clone(),
             connection_manager: context.connection_manager.clone(),
-            message_storage_adapter: context.message_storage_adapter.clone(),
+            storage_driver_manager: context.storage_driver_manager.clone(),
             delay_message_manager: context.delay_message_manager.clone(),
             subscribe_manager: context.subscribe_manager.clone(),
             schema_manager: context.schema_manager.clone(),
@@ -688,7 +688,7 @@ impl MQTTHandlerCommand {
             protocol: MqttProtocol::Mqtt4,
             cache_manager: context.cache_manager.clone(),
             connection_manager: context.connection_manager.clone(),
-            message_storage_adapter: context.message_storage_adapter.clone(),
+            storage_driver_manager: context.storage_driver_manager.clone(),
             delay_message_manager: context.delay_message_manager.clone(),
             subscribe_manager: context.subscribe_manager.clone(),
             schema_manager: context.schema_manager.clone(),
@@ -701,7 +701,7 @@ impl MQTTHandlerCommand {
             protocol: MqttProtocol::Mqtt5,
             cache_manager: context.cache_manager.clone(),
             connection_manager: context.connection_manager.clone(),
-            message_storage_adapter: context.message_storage_adapter.clone(),
+            storage_driver_manager: context.storage_driver_manager.clone(),
             delay_message_manager: context.delay_message_manager.clone(),
             subscribe_manager: context.subscribe_manager.clone(),
             schema_manager: context.schema_manager.clone(),

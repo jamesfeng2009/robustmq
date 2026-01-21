@@ -26,7 +26,6 @@ use metadata_struct::storage::{segment::EngineSegment, segment_meta::EngineSegme
 use std::sync::Arc;
 use tracing::warn;
 
-const UNINITIALIZED_OFFSET: i64 = -1;
 const UNINITIALIZED_TIMESTAMP: i64 = -1;
 
 async fn update_segment_metadata<F>(
@@ -58,8 +57,11 @@ where
     })?;
 
     update_fn(&mut meta);
-    sync_save_segment_metadata_info(raft_manager, &meta).await?;
-    update_cache_by_set_segment_meta(call_manager, client_pool, (*meta).clone()).await?;
+    let new_meta = meta.clone();
+    drop(meta);
+    drop(meta_list);
+    sync_save_segment_metadata_info(raft_manager, &new_meta).await?;
+    update_cache_by_set_segment_meta(call_manager, client_pool, new_meta).await?;
 
     Ok(())
 }
@@ -154,7 +156,7 @@ pub async fn create_segment_metadata(
         shard_name: segment.shard_name.clone(),
         segment_seq: segment.segment_seq,
         start_offset,
-        end_offset: UNINITIALIZED_OFFSET,
+        end_offset: start_offset, // When creating a new segment, the end offset is equal to the start offset.
         start_timestamp: UNINITIALIZED_TIMESTAMP,
         end_timestamp: UNINITIALIZED_TIMESTAMP,
     };

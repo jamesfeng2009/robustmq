@@ -33,15 +33,15 @@ use crate::subscribe::PushManager;
 use crate::system_topic::SystemTopic;
 use broker_core::cache::BrokerCacheManager;
 use common_config::broker::broker_config;
-use delay_message::{start_delay_message_manager, DelayMessageManager};
+use delay_message::manager::{start_delay_message_manager_thread, DelayMessageManager};
 use grpc_clients::pool::ClientPool;
 use network_server::common::connection_manager::ConnectionManager;
 use rocksdb_engine::metrics::mqtt::MQTTMetricsCache;
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use schema_register::schema::SchemaRegisterManager;
 use std::sync::Arc;
-use storage_adapter::offset::OffsetManager;
-use storage_adapter::storage::ArcStorageAdapter;
+use storage_adapter::driver::StorageDriverManager;
+use storage_engine::group::OffsetManager;
 use tokio::sync::broadcast::{self};
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -50,7 +50,7 @@ use tracing::{error, info};
 pub struct MqttBrokerServerParams {
     pub cache_manager: Arc<MQTTCacheManager>,
     pub client_pool: Arc<ClientPool>,
-    pub message_storage_adapter: ArcStorageAdapter,
+    pub storage_driver_manager: Arc<StorageDriverManager>,
     pub subscribe_manager: Arc<SubscribeManager>,
     pub connection_manager: Arc<ConnectionManager>,
     pub connector_manager: Arc<ConnectorManager>,
@@ -66,7 +66,7 @@ pub struct MqttBrokerServerParams {
 pub struct MqttBrokerServer {
     cache_manager: Arc<MQTTCacheManager>,
     client_pool: Arc<ClientPool>,
-    message_storage_adapter: ArcStorageAdapter,
+    storage_driver_manager: Arc<StorageDriverManager>,
     subscribe_manager: Arc<SubscribeManager>,
     connection_manager: Arc<ConnectionManager>,
     connector_manager: Arc<ConnectorManager>,
@@ -88,7 +88,7 @@ impl MqttBrokerServer {
             subscribe_manager: params.subscribe_manager.clone(),
             cache_manager: params.cache_manager.clone(),
             connection_manager: params.connection_manager.clone(),
-            message_storage_adapter: params.message_storage_adapter.clone(),
+            storage_driver_manager: params.storage_driver_manager.clone(),
             delay_message_manager: params.delay_message_manager.clone(),
             schema_manager: params.schema_manager.clone(),
             client_pool: params.client_pool.clone(),
@@ -103,7 +103,7 @@ impl MqttBrokerServer {
             inner_stop,
             cache_manager: params.cache_manager,
             client_pool: params.client_pool,
-            message_storage_adapter: params.message_storage_adapter,
+            storage_driver_manager: params.storage_driver_manager,
             subscribe_manager: params.subscribe_manager,
             connector_manager: params.connector_manager,
             connection_manager: params.connection_manager,
@@ -143,9 +143,9 @@ impl MqttBrokerServer {
             self.cache_manager.clone(),
             raw_stop_send,
         );
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             keep_alive.start_heartbeat_check().await;
-        });
+        }));
 
         // sync auth info
         let auth_driver = self.auth_driver.clone();
@@ -165,12 +165,12 @@ impl MqttBrokerServer {
         let raw_stop_send = self.inner_stop.clone();
         let system_topic = SystemTopic::new(
             self.cache_manager.clone(),
-            self.message_storage_adapter.clone(),
+            self.storage_driver_manager.clone(),
             self.client_pool.clone(),
         );
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             system_topic.start_thread(raw_stop_send).await;
-        });
+        }));
 
         // metrics record
         let metrics_cache_manager = self.metrics_cache_manager.clone();
@@ -195,35 +195,36 @@ impl MqttBrokerServer {
         let system_alarm = SystemAlarm::new(
             self.client_pool.clone(),
             self.cache_manager.clone(),
-            self.message_storage_adapter.clone(),
+            self.storage_driver_manager.clone(),
             self.rocksdb_engine_handler.clone(),
             self.inner_stop.clone(),
         );
         tokio::spawn(async move {
             if let Err(e) = system_alarm.start().await {
-                error!("Failed to start system alarm monitoring thread. System health alerts and notifications will not be sent. This is a non-critical error but monitoring capabilities are impaired. Error: {}", e);
+                error!("Failed to start system alarm monitoring: {}", e);
             }
         });
     }
 
     fn start_server(&self) {
         let server = self.server.clone();
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             if let Err(e) = server.start().await {
-                panic!("Failed to start MQTT broker server. This is a critical error that prevents the broker from accepting client connections. Error: {}", e);
+                error!("Failed to start MQTT broker server: {}", e);
+                std::process::exit(1);
             }
-        });
+        }));
     }
 
     fn start_connector_thread(&self) {
-        let message_storage = self.message_storage_adapter.clone();
+        let message_storage = self.storage_driver_manager.clone();
         let connector_manager = self.connector_manager.clone();
         let stop_send = self.inner_stop.clone();
         let client_poll = self.client_pool.clone();
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             start_connector_thread(client_poll, message_storage, connector_manager, stop_send)
                 .await;
-        });
+        }));
     }
 
     async fn start_subscribe_push(&self) {
@@ -231,7 +232,7 @@ impl MqttBrokerServer {
         let stop_send = self.inner_stop.clone();
         let push_manager = PushManager::new(
             self.cache_manager.clone(),
-            self.message_storage_adapter.clone(),
+            self.storage_driver_manager.clone(),
             self.connection_manager.clone(),
             self.rocksdb_engine_handler.clone(),
             self.subscribe_manager.clone(),
@@ -255,36 +256,38 @@ impl MqttBrokerServer {
         let client_pool = self.client_pool.clone();
         let cache_manager = self.cache_manager.clone();
         let stop_send = self.inner_stop.clone();
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             start_update_parse_thread(client_pool, cache_manager, subscribe_manager, rx, stop_send)
                 .await;
-        });
+        }));
     }
 
     fn start_delay_message_thread(&self) {
         let delay_message_manager = self.delay_message_manager.clone();
-        let message_storage_adapter = self.message_storage_adapter.clone();
+        let broker_cache = self.cache_manager.broker_cache.clone();
         tokio::spawn(async move {
             let conf = broker_config();
-            if let Err(e) = start_delay_message_manager(
-                &delay_message_manager,
-                &message_storage_adapter,
-                delay_message_manager.get_shard_num(),
-            )
-            .await
+            if let Err(e) =
+                start_delay_message_manager_thread(&delay_message_manager, &broker_cache).await
             {
-                panic!("Failed to start delay message manager for cluster '{}'. Delay message functionality will be unavailable. Check storage adapter connectivity and shard configuration. Error: {}", conf.cluster_name, e);
+                error!(
+                    "Failed to start delay message manager for cluster '{}': {}",
+                    conf.cluster_name, e
+                );
+                std::process::exit(1);
             }
         });
     }
 
     async fn start_init(&self) {
         if let Err(e) = init_system_user(&self.cache_manager, &self.client_pool).await {
-            panic!("Failed to initialize system user during broker startup. This is required for internal system operations. Check meta service connectivity and authentication configuration. Error: {}", e);
+            error!("Failed to initialize system user: {}", e);
+            std::process::exit(1);
         }
 
         if let Err(e) = self.offset_manager.try_comparison_and_save_offset().await {
-            panic!("Failed to synchronize offset data between local cache and remote storage during startup. This may indicate storage adapter issues or data consistency problems. Error: {}", e);
+            error!("Failed to synchronize offset data: {}", e);
+            std::process::exit(1);
         }
 
         if let Err(e) = load_metadata_cache(
@@ -296,7 +299,8 @@ impl MqttBrokerServer {
         )
         .await
         {
-            panic!("Failed to load metadata cache during broker initialization. This includes topics, users, ACLs, connectors, and schemas. Check meta service availability and network connectivity. Error: {}", e);
+            error!("Failed to load metadata cache: {}", e);
+            std::process::exit(1);
         }
     }
 
@@ -321,17 +325,17 @@ impl MqttBrokerServer {
                         )
                         .await
                         {
-                            error!("Failed to gracefully stop broker components (delay message manager or connection manager). Some resources may not be properly cleaned up. Error: {}", e);
+                            error!("Failed to stop broker components: {}", e);
                         }
                         info!("Service has been stopped successfully. Exiting the process.");
                     }
                     Err(e) => {
-                        error!("Failed to broadcast internal stop signal to daemon threads. Some background tasks may not terminate properly. Error: {}", e);
+                        error!("Failed to broadcast internal stop signal: {}", e);
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to receive shutdown signal from main stop channel. The broker may not shutdown gracefully. Error: {}", e);
+                error!("Failed to receive shutdown signal: {}", e);
             }
         }
     }

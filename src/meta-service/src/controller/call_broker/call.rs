@@ -115,7 +115,7 @@ pub async fn start_call_thread(
                     call_mqtt_update_cache(
                         &client_pool,
                         &call_manager.broker_cache,
-                        &node.node_inner_addr,
+                        &node.grpc_addr,
                         &filtered,
                     )
                     .await;
@@ -406,10 +406,8 @@ mod tests {
             extend: vec![],
             node_id,
             node_ip: "127.0.0.1".to_string(),
-            node_inner_addr: format!("127.0.0.1:{}", 9000 + node_id),
-            start_time: 0,
-            register_time: 0,
-            storage_fold: vec![],
+            grpc_addr: format!("127.0.0.1:{}", 9000 + node_id),
+            ..Default::default()
         }
     }
 
@@ -417,7 +415,7 @@ mod tests {
     fn test_is_ignore_push_non_node_type() {
         let node = create_test_node(1);
         let message = BrokerCallMessage {
-            action_type: BrokerUpdateCacheActionType::Set,
+            action_type: BrokerUpdateCacheActionType::Create,
             resource_type: BrokerUpdateCacheResourceType::Shard,
             data: vec![],
         };
@@ -432,7 +430,7 @@ mod tests {
         let data = serialize::serialize(&target_node).unwrap();
 
         let message = BrokerCallMessage {
-            action_type: BrokerUpdateCacheActionType::Set,
+            action_type: BrokerUpdateCacheActionType::Create,
             resource_type: BrokerUpdateCacheResourceType::Node,
             data,
         };
@@ -447,7 +445,7 @@ mod tests {
         let data = serialize::serialize(&target_node).unwrap();
 
         let message = BrokerCallMessage {
-            action_type: BrokerUpdateCacheActionType::Set,
+            action_type: BrokerUpdateCacheActionType::Create,
             resource_type: BrokerUpdateCacheResourceType::Node,
             data,
         };
@@ -459,7 +457,7 @@ mod tests {
     fn test_is_ignore_push_invalid_data() {
         let node = create_test_node(1);
         let message = BrokerCallMessage {
-            action_type: BrokerUpdateCacheActionType::Set,
+            action_type: BrokerUpdateCacheActionType::Create,
             resource_type: BrokerUpdateCacheResourceType::Node,
             data: vec![1, 2, 3],
         };

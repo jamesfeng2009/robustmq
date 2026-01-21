@@ -16,59 +16,66 @@ use crate::core::error::StorageEngineError;
 use crate::core::read_key::{read_by_key, ReadByKeyParams};
 use crate::core::read_offset::{read_by_offset, ReadByOffsetParams};
 use crate::core::read_tag::{read_by_tag, ReadByTagParams};
-use crate::core::shard::get_shard_offset_by_timestamp;
+use crate::group::OffsetManager;
 use crate::{
     clients::manager::ClientConnectionManager,
+    commitlog::memory::engine::MemoryStorageEngine,
+    commitlog::rocksdb::engine::RocksDBStorageEngine,
     core::{
         cache::StorageCacheManager,
         shard::{create_shard_to_place, delete_shard_to_place},
-        wirte::batch_write,
+        write::batch_write,
     },
-    memory::engine::MemoryStorageEngine,
-    rocksdb::engine::RocksDBStorageEngine,
-    segment::write::WriteManager,
+    filesegment::write::WriteManager,
 };
 use common_base::error::common::CommonError;
+use common_config::storage::StorageType;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::storage::adapter_offset::{
     AdapterConsumerGroupOffset, AdapterOffsetStrategy, AdapterShardInfo,
 };
 use metadata_struct::storage::adapter_read_config::{AdapterReadConfig, AdapterWriteRespRow};
 use metadata_struct::storage::adapter_record::AdapterWriteRecord;
-use metadata_struct::storage::shard::EngineType;
+use metadata_struct::storage::shard::EngineShard;
 use metadata_struct::storage::storage_record::StorageRecord;
 use rocksdb_engine::rocksdb::RocksDBEngine;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Clone)]
-pub struct AdapterHandler {
-    cache_manager: Arc<StorageCacheManager>,
-    memory_storage_engine: Arc<MemoryStorageEngine>,
-    rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
-    client_connection_manager: Arc<ClientConnectionManager>,
-    rocksdb_engine_handler: Arc<RocksDBEngine>,
-    write_manager: Arc<WriteManager>,
-    client_pool: Arc<ClientPool>,
+pub struct StorageEngineHandlerParams {
+    pub cache_manager: Arc<StorageCacheManager>,
+    pub client_pool: Arc<ClientPool>,
+    pub memory_storage_engine: Arc<MemoryStorageEngine>,
+    pub rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
+    pub client_connection_manager: Arc<ClientConnectionManager>,
+    pub rocksdb_engine_handler: Arc<RocksDBEngine>,
+    pub write_manager: Arc<WriteManager>,
+    pub offset_manager: Arc<OffsetManager>,
 }
 
-impl AdapterHandler {
-    pub fn new(
-        cache_manager: Arc<StorageCacheManager>,
-        client_pool: Arc<ClientPool>,
-        memory_storage_engine: Arc<MemoryStorageEngine>,
-        rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
-        client_connection_manager: Arc<ClientConnectionManager>,
-        rocksdb_engine_handler: Arc<RocksDBEngine>,
-        write_manager: Arc<WriteManager>,
-    ) -> Self {
-        AdapterHandler {
-            cache_manager,
-            client_pool,
-            memory_storage_engine,
-            rocksdb_storage_engine,
-            rocksdb_engine_handler,
-            client_connection_manager,
-            write_manager,
+#[derive(Clone)]
+pub struct StorageEngineHandler {
+    pub cache_manager: Arc<StorageCacheManager>,
+    pub memory_storage_engine: Arc<MemoryStorageEngine>,
+    pub rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
+    pub client_connection_manager: Arc<ClientConnectionManager>,
+    pub rocksdb_engine_handler: Arc<RocksDBEngine>,
+    pub write_manager: Arc<WriteManager>,
+    pub client_pool: Arc<ClientPool>,
+    pub offset_manager: Arc<OffsetManager>,
+}
+
+impl StorageEngineHandler {
+    pub fn new(params: StorageEngineHandlerParams) -> Self {
+        StorageEngineHandler {
+            cache_manager: params.cache_manager,
+            client_pool: params.client_pool,
+            memory_storage_engine: params.memory_storage_engine,
+            rocksdb_storage_engine: params.rocksdb_storage_engine,
+            rocksdb_engine_handler: params.rocksdb_engine_handler,
+            client_connection_manager: params.client_connection_manager,
+            write_manager: params.write_manager,
+            offset_manager: params.offset_manager,
         }
     }
 
@@ -79,16 +86,10 @@ impl AdapterHandler {
         Ok(())
     }
 
-    pub async fn list_shard(
-        &self,
-        shard: Option<String>,
-    ) -> Result<Vec<AdapterShardInfo>, CommonError> {
+    pub async fn list_shard(&self, shard: Option<String>) -> Result<Vec<EngineShard>, CommonError> {
         if let Some(shard_name) = shard {
             if let Some(raw) = self.cache_manager.shards.get(&shard_name) {
-                return Ok(vec![AdapterShardInfo {
-                    shard_name: raw.shard_name.clone(),
-                    replica_num: 1,
-                }]);
+                return Ok(vec![raw.clone()]);
             }
             return Ok(Vec::new());
         }
@@ -97,10 +98,7 @@ impl AdapterHandler {
             .cache_manager
             .shards
             .iter()
-            .map(|raw| AdapterShardInfo {
-                shard_name: raw.shard_name.clone(),
-                replica_num: 1,
-            })
+            .map(|raw| raw.clone())
             .collect();
 
         Ok(res)
@@ -173,6 +171,7 @@ impl AdapterHandler {
             shard_name: shard.to_string(),
             tag: tag.to_string(),
             start_offset,
+            batch_call_source: false,
             read_config: read_config.clone(),
         })
         .await
@@ -194,6 +193,7 @@ impl AdapterHandler {
             rocksdb_storage_engine: self.rocksdb_storage_engine.clone(),
             client_connection_manager: self.client_connection_manager.clone(),
             shard_name: shard.to_string(),
+            batch_call_source: false,
             key: key.to_string(),
         })
         .await
@@ -208,14 +208,105 @@ impl AdapterHandler {
         shard: &str,
         timestamp: u64,
         strategy: AdapterOffsetStrategy,
-    ) -> Result<Option<AdapterConsumerGroupOffset>, CommonError> {
+    ) -> Result<u64, CommonError> {
         match self
             .get_offset_by_timestamp0(shard, timestamp, strategy)
             .await
         {
-            Ok(data) => Ok(data),
+            Ok(offset) => Ok(offset),
             Err(e) => Err(CommonError::CommonError(e.to_string())),
         }
+    }
+
+    pub async fn get_offset_by_group(
+        &self,
+        group_name: &str,
+    ) -> Result<Vec<AdapterConsumerGroupOffset>, CommonError> {
+        self.offset_manager.get_offset(group_name).await
+    }
+
+    pub async fn commit_offset(
+        &self,
+        group_name: &str,
+        offset: &HashMap<String, u64>,
+    ) -> Result<(), CommonError> {
+        self.offset_manager.commit_offset(group_name, offset).await
+    }
+
+    pub async fn delete_by_key(
+        &self,
+        shard_name: &str,
+        key: &str,
+    ) -> Result<(), StorageEngineError> {
+        let Some(shard) = self.cache_manager.shards.get(shard_name) else {
+            return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
+        };
+
+        match shard.config.storage_type {
+            StorageType::EngineMemory => {
+                self.memory_storage_engine
+                    .delete_by_key(shard_name, key)
+                    .await?;
+            }
+
+            StorageType::EngineRocksDB => {
+                self.rocksdb_storage_engine
+                    .delete_by_key(shard_name, key)
+                    .await?;
+            }
+
+            StorageType::EngineSegment => {
+                return Err(StorageEngineError::CommonErrorStr(
+                    "delete_by_key operation is not supported".to_string(),
+                ));
+            }
+
+            _ => {
+                return Err(StorageEngineError::CommonErrorStr(format!(
+                    "Unsupported storage type {:?} for shard {} when delete by key",
+                    shard.config.storage_type, shard_name
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn delete_by_offset(
+        &self,
+        shard_name: &str,
+        offset: u64,
+    ) -> Result<(), StorageEngineError> {
+        let Some(shard) = self.cache_manager.shards.get(shard_name) else {
+            return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
+        };
+
+        match shard.config.storage_type {
+            StorageType::EngineMemory => {
+                self.memory_storage_engine
+                    .delete_by_offset(shard_name, offset)
+                    .await?;
+            }
+
+            StorageType::EngineRocksDB => {
+                self.rocksdb_storage_engine
+                    .delete_by_offset(shard_name, offset)
+                    .await?;
+            }
+
+            StorageType::EngineSegment => {
+                return Err(StorageEngineError::CommonErrorStr(
+                    "delete_by_offset operation is not supported".to_string(),
+                ));
+            }
+
+            _ => {
+                return Err(StorageEngineError::CommonErrorStr(format!(
+                    "Unsupported storage type {:?} for shard {} when getting delete by key",
+                    shard.config.storage_type, shard_name
+                )))
+            }
+        }
+        Ok(())
     }
 
     async fn get_offset_by_timestamp0(
@@ -223,29 +314,37 @@ impl AdapterHandler {
         shard_name: &str,
         timestamp: u64,
         strategy: AdapterOffsetStrategy,
-    ) -> Result<Option<AdapterConsumerGroupOffset>, StorageEngineError> {
+    ) -> Result<u64, StorageEngineError> {
         let Some(shard) = self.cache_manager.shards.get(shard_name) else {
             return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
         };
-        let result = match shard.engine_type {
-            EngineType::Memory => {
+
+        let result = match shard.config.storage_type {
+            StorageType::EngineMemory => {
                 self.memory_storage_engine
                     .get_offset_by_timestamp(shard_name, timestamp, strategy)
                     .await?
             }
-            EngineType::RocksDB => {
+
+            StorageType::EngineRocksDB => {
                 self.rocksdb_storage_engine
                     .get_offset_by_timestamp(shard_name, timestamp, strategy)
                     .await?
             }
-            EngineType::Segment => Some(get_shard_offset_by_timestamp(
-                &self.cache_manager,
-                &self.rocksdb_engine_handler,
-                shard_name,
-                timestamp,
-                strategy,
-            )?),
+
+            StorageType::EngineSegment => {
+                // self.get_shard_offset_by_timestamp_by_segment(shard_name, timestamp, strategy)?
+                0
+            }
+
+            _ => {
+                return Err(StorageEngineError::CommonErrorStr(format!(
+                    "Unsupported storage type {:?} for shard {} when getting offset by timestamp",
+                    shard.config.storage_type, shard_name
+                )))
+            }
         };
+
         Ok(result)
     }
 }

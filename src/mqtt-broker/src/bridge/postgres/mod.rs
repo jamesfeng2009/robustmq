@@ -15,12 +15,13 @@
 use std::sync::Arc;
 
 use axum::async_trait;
+use grpc_clients::pool::ClientPool;
 use metadata_struct::{
     mqtt::bridge::config_postgres::PostgresConnectorConfig, mqtt::bridge::connector::MQTTConnector,
     storage::adapter_record::AdapterWriteRecord,
 };
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
-use storage_adapter::storage::ArcStorageAdapter;
+use storage_adapter::driver::StorageDriverManager;
 use tracing::{error, warn};
 
 use crate::handler::tool::ResultMqttBrokerError;
@@ -231,12 +232,13 @@ impl ConnectorSink for PostgresBridgePlugin {
 }
 
 pub fn start_postgres_connector(
+    client_pool: Arc<ClientPool>,
     connector_manager: Arc<ConnectorManager>,
-    message_storage: ArcStorageAdapter,
+    storage_driver_manager: Arc<StorageDriverManager>,
     connector: MQTTConnector,
     thread: BridgePluginThread,
 ) {
-    tokio::spawn(async move {
+    tokio::spawn(Box::pin(async move {
         let postgres_config = match &connector.config {
             metadata_struct::mqtt::bridge::ConnectorConfig::Postgres(config) => config.clone(),
             _ => {
@@ -251,8 +253,9 @@ pub fn start_postgres_connector(
 
         if let Err(e) = run_connector_loop(
             &bridge,
+            &client_pool,
             &connector_manager,
-            message_storage.clone(),
+            storage_driver_manager.clone(),
             connector.connector_name.clone(),
             BridgePluginReadConfig {
                 topic_name: connector.topic_name,
@@ -269,5 +272,5 @@ pub fn start_postgres_connector(
                 e
             );
         }
-    });
+    }));
 }

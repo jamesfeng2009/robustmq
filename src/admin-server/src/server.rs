@@ -13,6 +13,10 @@
 // limitations under the License.
 
 use crate::cluster::index;
+use crate::engine::shard::{
+    commit_offset, get_offset_by_group, get_offset_by_timestamp, segment_list, shard_create,
+    shard_delete, shard_list,
+};
 use crate::mqtt::topic::{topic_delete, topic_rewrite_delete};
 use crate::{
     cluster::{cluster_config_get, cluster_config_set, cluster_info},
@@ -106,6 +110,7 @@ impl AdminServer {
             .merge(self.common_route())
             .merge(self.mqtt_route())
             .merge(self.kafka_route())
+            .merge(self.engine_route())
     }
 
     fn common_route(&self) -> Router<Arc<HttpState>> {
@@ -117,6 +122,26 @@ impl AdminServer {
             .route("/", get(index))
     }
 
+    fn engine_route(&self) -> Router<Arc<HttpState>> {
+        Router::new()
+            // shard
+            .route(STORAGE_ENGINE_SHARD_LIST_PATH, post(shard_list))
+            .route(STORAGE_ENGINE_SHARD_CREATE_PATH, post(shard_create))
+            .route(STORAGE_ENGINE_SHARD_DELETE_PATH, post(shard_delete))
+            // segment
+            .route(STORAGE_ENGINE_SEGMENT_LIST_PATH, post(segment_list))
+            // offset
+            .route(
+                STORAGE_ENGINE_OFFSET_BY_TIMESTAMP_PATH,
+                post(get_offset_by_timestamp),
+            )
+            .route(
+                STORAGE_ENGINE_OFFSET_BY_GROUP_PATH,
+                post(get_offset_by_group),
+            )
+            .route(STORAGE_ENGINE_OFFSET_COMMIT_PATH, post(commit_offset))
+    }
+
     fn mqtt_route(&self) -> Router<Arc<HttpState>> {
         Router::new()
             // overview
@@ -126,7 +151,7 @@ impl AdminServer {
             // client
             .route(MQTT_CLIENT_LIST_PATH, get(client_list))
             // session
-            .route(MQTT_SESSION_LIST_PATH, post(session_list))
+            .route(MQTT_SESSION_LIST_PATH, get(session_list))
             // topic
             .route(MQTT_TOPIC_LIST_PATH, post(topic_list))
             .route(MQTT_TOPIC_DETAIL_PATH, post(topic_detail))

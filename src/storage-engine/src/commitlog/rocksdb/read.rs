@@ -1,0 +1,367 @@
+// Copyright 2023 RobustMQ Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::{
+    commitlog::rocksdb::engine::{IndexInfo, RocksDBStorageEngine},
+    core::error::StorageEngineError,
+};
+use common_base::utils::serialize::deserialize;
+use metadata_struct::storage::{
+    adapter_offset::AdapterOffsetStrategy, adapter_read_config::AdapterReadConfig,
+    storage_record::StorageRecord,
+};
+use rocksdb_engine::keys::storage::{
+    key_index_key, shard_record_key, shard_record_key_prefix, tag_index_tag_prefix,
+    timestamp_index_prefix,
+};
+
+impl RocksDBStorageEngine {
+    pub async fn read_by_offset(
+        &self,
+        shard: &str,
+        offset: u64,
+        read_config: &AdapterReadConfig,
+    ) -> Result<Vec<StorageRecord>, StorageEngineError> {
+        let cf = self.get_cf()?;
+
+        let keys: Vec<String> = (offset..offset.saturating_add(read_config.max_record_num))
+            .map(|i| shard_record_key(shard, i))
+            .collect();
+
+        let mut records = Vec::new();
+        let mut total_size = 0;
+
+        let batch_results = self
+            .rocksdb_engine_handler
+            .multi_get::<StorageRecord>(cf, &keys)?;
+        for record_opt in batch_results {
+            let Some(record) = record_opt else {
+                break;
+            };
+
+            let record_bytes = record.data.len() as u64;
+            if total_size + record_bytes > read_config.max_size {
+                break;
+            }
+
+            total_size += record_bytes;
+            records.push(record);
+        }
+
+        Ok(records)
+    }
+
+    pub async fn read_by_tag(
+        &self,
+        shard: &str,
+        tag: &str,
+        start_offset: Option<u64>,
+        read_config: &AdapterReadConfig,
+    ) -> Result<Vec<StorageRecord>, StorageEngineError> {
+        let cf = self.get_cf()?;
+        let tag_offset_key_prefix = tag_index_tag_prefix(shard, tag);
+        let tag_entries = self
+            .rocksdb_engine_handler
+            .read_prefix(cf.clone(), &tag_offset_key_prefix)?;
+
+        // Filter and collect offsets >= specified offset
+        let mut offsets = Vec::new();
+        for (_key, value) in tag_entries {
+            let record_offset = deserialize::<IndexInfo>(&value)?;
+
+            if let Some(so) = start_offset {
+                if record_offset.offset < so {
+                    continue;
+                }
+            }
+
+            offsets.push(record_offset.offset);
+            if offsets.len() >= read_config.max_record_num as usize {
+                break;
+            }
+        }
+
+        if offsets.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build record keys from offsets
+        let keys: Vec<String> = offsets
+            .iter()
+            .map(|off| shard_record_key(shard, *off))
+            .collect();
+
+        // Batch read records
+        let batch_results = self
+            .rocksdb_engine_handler
+            .multi_get::<StorageRecord>(cf, &keys)?;
+        let mut records = Vec::new();
+        let mut total_size = 0;
+
+        for record_opt in batch_results {
+            let Some(record) = record_opt else {
+                continue;
+            };
+
+            let record_bytes = record.data.len() as u64;
+            if total_size + record_bytes > read_config.max_size {
+                break;
+            }
+
+            total_size += record_bytes;
+            records.push(record);
+        }
+
+        Ok(records)
+    }
+
+    pub async fn read_by_key(
+        &self,
+        shard: &str,
+        key: &str,
+    ) -> Result<Vec<StorageRecord>, StorageEngineError> {
+        let index = if let Some(index) = self.get_offset_by_key(shard, key).await? {
+            index
+        } else {
+            return Ok(Vec::new());
+        };
+
+        let cf: std::sync::Arc<rocksdb::BoundColumnFamily<'_>> = self.get_cf()?;
+        let shard_record_key = shard_record_key(shard, index.offset);
+        let Some(record) = self
+            .rocksdb_engine_handler
+            .read::<StorageRecord>(cf, &shard_record_key)?
+        else {
+            return Ok(Vec::new());
+        };
+
+        Ok(vec![record])
+    }
+
+    pub async fn get_offset_by_key(
+        &self,
+        shard: &str,
+        key: &str,
+    ) -> Result<Option<IndexInfo>, StorageEngineError> {
+        let cf = self.get_cf()?;
+        let key_index = key_index_key(shard, key);
+
+        let key_offset_bytes = match self.rocksdb_engine_handler.db.get_cf(&cf, &key_index) {
+            Ok(Some(data)) => data,
+            Ok(_) => return Ok(None),
+            Err(e) => {
+                return Err(StorageEngineError::CommonErrorStr(format!(
+                    "Failed to read key offset: {e:?}"
+                )))
+            }
+        };
+
+        Ok(Some(deserialize::<IndexInfo>(&key_offset_bytes)?))
+    }
+
+    pub async fn get_offset_by_timestamp(
+        &self,
+        shard: &str,
+        timestamp: u64,
+        strategy: AdapterOffsetStrategy,
+    ) -> Result<u64, StorageEngineError> {
+        let index = self.search_index_by_timestamp(shard, timestamp).await?;
+        if let Some(idx) = index {
+            if let Some(found_offset) = self
+                .read_data_by_time(shard, &Some(idx.clone()), timestamp)
+                .await?
+            {
+                return Ok(found_offset);
+            }
+        }
+        match strategy {
+            AdapterOffsetStrategy::Earliest => {
+                Ok(self.commitlog_offset.get_earliest_offset(shard)?)
+            }
+            AdapterOffsetStrategy::Latest => Ok(self.commitlog_offset.get_latest_offset(shard)?),
+        }
+    }
+
+    pub async fn search_index_by_timestamp(
+        &self,
+        shard: &str,
+        timestamp: u64,
+    ) -> Result<Option<IndexInfo>, StorageEngineError> {
+        let cf = self.get_cf()?;
+        let timestamp_index_prefix = timestamp_index_prefix(shard);
+        let mut iter = self.rocksdb_engine_handler.db.raw_iterator_cf(&cf);
+        iter.seek(&timestamp_index_prefix);
+
+        let mut last_index = None;
+        while iter.valid() {
+            let Some(key_bytes) = iter.key() else {
+                break;
+            };
+
+            let Some(value_byte) = iter.value() else {
+                break;
+            };
+
+            let key = match String::from_utf8(key_bytes.to_vec()) {
+                Ok(k) => k,
+                Err(_) => {
+                    iter.next();
+                    continue;
+                }
+            };
+
+            if !key.starts_with(&timestamp_index_prefix) {
+                break;
+            }
+
+            let index = deserialize::<IndexInfo>(value_byte)?;
+
+            if last_index.is_none() {
+                last_index = Some(index.clone());
+            }
+
+            if index.create_time > timestamp {
+                return Ok(last_index);
+            }
+            last_index = Some(index);
+
+            iter.next();
+        }
+
+        Ok(last_index)
+    }
+
+    async fn read_data_by_time(
+        &self,
+        shard: &str,
+        start_index: &Option<IndexInfo>,
+        timestamp: u64,
+    ) -> Result<Option<u64>, StorageEngineError> {
+        let cf = self.get_cf()?;
+        let seek_key = if let Some(si) = start_index {
+            shard_record_key(shard, si.offset)
+        } else {
+            shard_record_key_prefix(shard)
+        };
+        let prefix = shard_record_key_prefix(shard);
+
+        let mut iter = self.rocksdb_engine_handler.db.raw_iterator_cf(&cf);
+        iter.seek(&seek_key);
+
+        while iter.valid() {
+            let Some(key_bytes) = iter.key() else {
+                break;
+            };
+
+            let Some(value_byte) = iter.value() else {
+                break;
+            };
+
+            let key = match String::from_utf8(key_bytes.to_vec()) {
+                Ok(k) => k,
+                Err(_) => {
+                    iter.next();
+                    continue;
+                }
+            };
+
+            if !key.starts_with(&prefix) {
+                break;
+            }
+
+            if let Ok(engine_record) = deserialize::<StorageRecord>(value_byte) {
+                if engine_record.metadata.create_t >= timestamp {
+                    return Ok(Some(engine_record.metadata.offset));
+                }
+            }
+
+            iter.next();
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::commitlog::offset::CommitLogOffset;
+    use crate::core::cache::StorageCacheManager;
+    use crate::core::test_tool::test_build_rocksdb_engine;
+    use broker_core::cache::BrokerCacheManager;
+    use common_base::tools::unique_id;
+    use common_config::config::BrokerConfig;
+    use metadata_struct::storage::adapter_offset::AdapterOffsetStrategy;
+    use metadata_struct::storage::adapter_record::AdapterWriteRecord;
+
+    #[tokio::test]
+    async fn test_batch_write_and_read_by_offset() {
+        let engine = test_build_rocksdb_engine();
+        let shard_name = unique_id();
+        let broker_cache = Arc::new(BrokerCacheManager::new(BrokerConfig::default()));
+        let cache_manager = Arc::new(StorageCacheManager::new(broker_cache));
+        let commit_offset =
+            CommitLogOffset::new(cache_manager.clone(), engine.rocksdb_engine_handler.clone());
+
+        commit_offset.save_earliest_offset(&shard_name, 0).unwrap();
+        commit_offset.save_latest_offset(&shard_name, 0).unwrap();
+
+        let messages: Vec<AdapterWriteRecord> = (0..10)
+            .map(|i| AdapterWriteRecord {
+                pkid: i,
+                key: Some(format!("key{}", i)),
+                tags: Some(vec![format!("tag{}", i % 3)]),
+                timestamp: 1000 + i * 100,
+                ..Default::default()
+            })
+            .collect();
+
+        let write_result = engine.batch_write(&shard_name, &messages).await.unwrap();
+        assert_eq!(write_result.len(), 10);
+        assert_eq!(write_result[0].offset, 0);
+        assert_eq!(write_result[9].offset, 9);
+
+        let read_config = AdapterReadConfig {
+            max_record_num: 10,
+            max_size: 1024 * 1024,
+        };
+        let records = engine
+            .read_by_offset(&shard_name, 0, &read_config)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 10);
+        assert_eq!(records[0].metadata.offset, 0);
+        assert_eq!(records[9].metadata.offset, 9);
+
+        let tag_records = engine
+            .read_by_tag(&shard_name, "tag0", None, &read_config)
+            .await
+            .unwrap();
+        assert_eq!(tag_records.len(), 4);
+        assert_eq!(tag_records[0].metadata.offset, 0);
+        assert_eq!(tag_records[3].metadata.offset, 9);
+
+        let key_records = engine.read_by_key(&shard_name, "key5").await.unwrap();
+        assert_eq!(key_records.len(), 1);
+        assert_eq!(key_records[0].metadata.offset, 5);
+
+        let offset_by_ts = engine
+            .get_offset_by_timestamp(&shard_name, 1500, AdapterOffsetStrategy::Latest)
+            .await
+            .unwrap();
+        assert_eq!(offset_by_ts, 5);
+    }
+}

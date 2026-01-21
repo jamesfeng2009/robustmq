@@ -1,0 +1,171 @@
+// Copyright 2023 RobustMQ Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::{
+    clients::{
+        manager::ClientConnectionManager,
+        packet::{build_write_req, write_resp_parse},
+    },
+    commitlog::memory::engine::MemoryStorageEngine,
+    commitlog::rocksdb::engine::RocksDBStorageEngine,
+    core::{cache::StorageCacheManager, error::StorageEngineError, segment::segment_validator},
+    filesegment::{
+        write::{WriteChannelDataRecord, WriteManager},
+        SegmentIdentity,
+    },
+};
+use common_base::utils::serialize::serialize;
+use common_config::{broker::broker_config, storage::StorageType};
+use metadata_struct::storage::{
+    adapter_read_config::AdapterWriteRespRow, adapter_record::AdapterWriteRecord,
+};
+use protocol::storage::codec::StorageEnginePacket;
+use std::sync::Arc;
+
+pub async fn batch_write(
+    write_manager: &Arc<WriteManager>,
+    cache_manager: &Arc<StorageCacheManager>,
+    memory_storage_engine: &Arc<MemoryStorageEngine>,
+    rocksdb_storage_engine: &Arc<RocksDBStorageEngine>,
+    client_connection_manager: &Arc<ClientConnectionManager>,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<AdapterWriteRespRow>, StorageEngineError> {
+    let Some(shard) = cache_manager.shards.get(shard_name) else {
+        return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
+    };
+
+    let Some(active_segment) = cache_manager.get_active_segment(shard_name) else {
+        return Err(StorageEngineError::SegmentNotExist(shard_name.to_owned()));
+    };
+
+    let segment_iden = SegmentIdentity::new(shard_name, active_segment.segment_seq);
+    segment_validator(cache_manager, &shard, &active_segment, &segment_iden)?;
+
+    let conf = broker_config();
+
+    let offsets = if conf.broker_id == active_segment.leader {
+        match shard.config.storage_type {
+            StorageType::EngineMemory => {
+                write_memory_to_local(memory_storage_engine, shard_name, records).await?
+            }
+            StorageType::EngineRocksDB => {
+                write_rocksdb_to_local(rocksdb_storage_engine, shard_name, records).await?
+            }
+            StorageType::EngineSegment => {
+                write_segment_to_local(
+                    write_manager,
+                    shard_name,
+                    active_segment.segment_seq,
+                    records,
+                )
+                .await?
+            }
+            _ => {
+                return Err(StorageEngineError::CommonErrorStr(format!(
+                    "Unsupported storage type {:?} for shard {} when writing data",
+                    shard.config.storage_type, shard_name
+                )))
+            }
+        }
+    } else {
+        write_data_to_remote(
+            client_connection_manager,
+            active_segment.leader,
+            shard_name,
+            records,
+        )
+        .await?
+    };
+    Ok(offsets)
+}
+
+async fn write_data_to_remote(
+    client_connection_manager: &Arc<ClientConnectionManager>,
+    target_broker_id: u64,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<AdapterWriteRespRow>, StorageEngineError> {
+    let messages = records
+        .iter()
+        .map(serialize)
+        .collect::<Result<Vec<_>, _>>()?;
+    let write_req = build_write_req(shard_name.to_string(), messages);
+    let resp = client_connection_manager
+        .write_send(target_broker_id, StorageEnginePacket::WriteReq(write_req))
+        .await?;
+
+    match resp {
+        StorageEnginePacket::WriteResp(resp) => Ok(write_resp_parse(&resp)?),
+        packet => Err(StorageEngineError::ReceivedPacketError(
+            target_broker_id,
+            format!("Expected WriteResp, got {:?}", packet),
+        )),
+    }
+}
+
+async fn write_memory_to_local(
+    memory_storage_engine: &Arc<MemoryStorageEngine>,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<AdapterWriteRespRow>, StorageEngineError> {
+    let offsets = memory_storage_engine
+        .batch_write(shard_name, records)
+        .await?;
+    Ok(offsets)
+}
+
+async fn write_rocksdb_to_local(
+    rocksdb_storage_engine: &Arc<RocksDBStorageEngine>,
+    shard_name: &str,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<AdapterWriteRespRow>, StorageEngineError> {
+    let offsets = rocksdb_storage_engine
+        .batch_write(shard_name, records)
+        .await?;
+    Ok(offsets)
+}
+
+async fn write_segment_to_local(
+    write_manager: &Arc<WriteManager>,
+    shard_name: &str,
+    segment: u32,
+    records: &[AdapterWriteRecord],
+) -> Result<Vec<AdapterWriteRespRow>, StorageEngineError> {
+    let segment_iden = SegmentIdentity::new(shard_name, segment);
+    let data_list = records
+        .iter()
+        .map(|record| WriteChannelDataRecord {
+            pkid: record.pkid,
+            header: record.header.as_ref().map(|headers| {
+                headers
+                    .iter()
+                    .map(|h| metadata_struct::storage::storage_record::Header {
+                        name: h.name.clone(),
+                        value: h.value.clone(),
+                    })
+                    .collect()
+            }),
+            key: record.key.clone(),
+            tags: record.tags.clone(),
+            value: record.data.clone(),
+        })
+        .collect();
+    let resp = write_manager.write(&segment_iden, data_list).await?;
+    if let Some(err) = resp.error {
+        return Err(StorageEngineError::CommonErrorStr(err));
+    }
+
+    Ok(resp.offsets)
+}

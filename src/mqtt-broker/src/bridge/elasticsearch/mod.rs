@@ -23,12 +23,13 @@ use elasticsearch::{
     },
     BulkParts, Elasticsearch,
 };
+use grpc_clients::pool::ClientPool;
 use metadata_struct::{
     mqtt::bridge::config_elasticsearch::ElasticsearchConnectorConfig,
     mqtt::bridge::connector::MQTTConnector, storage::adapter_record::AdapterWriteRecord,
 };
 use serde_json::{json, Value};
-use storage_adapter::storage::ArcStorageAdapter;
+use storage_adapter::driver::StorageDriverManager;
 use tracing::error;
 
 use crate::handler::error::MqttBrokerError;
@@ -177,12 +178,13 @@ impl ConnectorSink for ElasticsearchBridgePlugin {
 }
 
 pub fn start_elasticsearch_connector(
+    client_pool: Arc<ClientPool>,
     connector_manager: Arc<ConnectorManager>,
-    message_storage: ArcStorageAdapter,
+    storage_driver_manager: Arc<StorageDriverManager>,
     connector: MQTTConnector,
     thread: BridgePluginThread,
 ) {
-    tokio::spawn(async move {
+    tokio::spawn(Box::pin(async move {
         let es_config = match &connector.config {
             metadata_struct::mqtt::bridge::ConnectorConfig::Elasticsearch(config) => config.clone(),
             _ => {
@@ -197,8 +199,9 @@ pub fn start_elasticsearch_connector(
 
         if let Err(e) = run_connector_loop(
             &bridge,
+            &client_pool,
             &connector_manager,
-            message_storage.clone(),
+            storage_driver_manager.clone(),
             connector.connector_name.clone(),
             BridgePluginReadConfig {
                 topic_name: connector.topic_name,
@@ -215,5 +218,5 @@ pub fn start_elasticsearch_connector(
                 e
             );
         }
-    });
+    }));
 }

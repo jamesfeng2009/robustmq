@@ -26,11 +26,11 @@ use super::{
 use crate::{storage::message::MessageStorage, subscribe::manager::SubscribeManager};
 use common_base::tools::now_second;
 use common_metrics::mqtt::publish::record_messages_dropped_no_subscribers_incr;
-use delay_message::DelayMessageManager;
+use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
-use metadata_struct::mqtt::{message::MqttMessage, topic::MQTTTopic};
+use metadata_struct::mqtt::{message::MqttMessage, topic::Topic};
 use protocol::mqtt::common::{Publish, PublishProperties};
-use storage_adapter::storage::ArcStorageAdapter;
+use storage_adapter::driver::StorageDriverManager;
 
 pub fn is_exist_subscribe(subscribe_manager: &Arc<SubscribeManager>, topic: &str) -> bool {
     subscribe_manager.topic_subscribes.contains_key(topic)
@@ -38,7 +38,7 @@ pub fn is_exist_subscribe(subscribe_manager: &Arc<SubscribeManager>, topic: &str
 
 #[derive(Clone)]
 pub struct SaveMessageContext {
-    pub message_storage_adapter: ArcStorageAdapter,
+    pub storage_driver_manager: Arc<StorageDriverManager>,
     pub delay_message_manager: Arc<DelayMessageManager>,
     pub cache_manager: Arc<MQTTCacheManager>,
     pub client_pool: Arc<ClientPool>,
@@ -46,7 +46,7 @@ pub struct SaveMessageContext {
     pub publish_properties: Option<PublishProperties>,
     pub subscribe_manager: Arc<SubscribeManager>,
     pub client_id: String,
-    pub topic: MQTTTopic,
+    pub topic: Topic,
     pub delay_info: Option<DelayPublishTopic>,
 }
 
@@ -94,7 +94,7 @@ pub async fn save_message(context: SaveMessageContext) -> Result<Option<String>,
     }
 
     return save_simple_message(
-        &context.message_storage_adapter,
+        &context.storage_driver_manager,
         &context.publish,
         &context.publish_properties,
         &context.client_id,
@@ -142,7 +142,7 @@ async fn save_delay_message(
         &Some(new_publish_properties),
         message_expire,
     ) {
-        let target_shard_name = delay_info.tagget_shard_name.as_ref().unwrap();
+        let target_shard_name = delay_info.target_shard_name.as_ref().unwrap();
         delay_message_manager
             .send(target_shard_name, delay_info.delay_timestamp, record)
             .await?;
@@ -153,17 +153,17 @@ async fn save_delay_message(
 }
 
 async fn save_simple_message(
-    message_storage_adapter: &ArcStorageAdapter,
+    storage_driver_manager: &Arc<StorageDriverManager>,
     publish: &Publish,
     publish_properties: &Option<PublishProperties>,
     client_id: &str,
-    topic: &MQTTTopic,
+    topic: &Topic,
     message_expire: u64,
 ) -> Result<Option<String>, MqttBrokerError> {
     if let Some(record) =
         MqttMessage::build_record(client_id, publish, publish_properties, message_expire)
     {
-        let message_storage = MessageStorage::new(message_storage_adapter.clone());
+        let message_storage = MessageStorage::new(storage_driver_manager.clone());
         let offsets = message_storage
             .append_topic_message(&topic.topic_name, vec![record])
             .await?;

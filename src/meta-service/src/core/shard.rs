@@ -22,9 +22,7 @@ use crate::raft::route::data::{StorageData, StorageDataType};
 use bytes::Bytes;
 use common_base::tools::{now_second, unique_id};
 use grpc_clients::pool::ClientPool;
-use metadata_struct::storage::shard::{
-    EngineShard, EngineShardConfig, EngineShardStatus, EngineType,
-};
+use metadata_struct::storage::shard::{EngineShard, EngineShardConfig, EngineShardStatus};
 use std::sync::Arc;
 use tracing::info;
 
@@ -53,8 +51,6 @@ pub async fn create_shard(
         last_segment_seq: 0,
         status: EngineShardStatus::Run,
         config: shard_config.clone(),
-        replica_num: shard_config.replica_num,
-        engine_type: EngineType::Segment,
         create_time: now_second(),
     };
 
@@ -99,13 +95,12 @@ where
 {
     if let Some(mut shard) = cache_manager.shard_list.get_mut(shard_name) {
         update_fn(&mut shard);
-        let shard_clone = shard.clone();
-        drop(shard);
-
-        sync_save_shard_info(raft_manager, &shard_clone).await?;
-        update_cache_by_set_shard(call_manager, client_pool, shard_clone).await?;
     }
 
+    if let Some(shard) = cache_manager.get_shard(shard_name) {
+        sync_save_shard_info(raft_manager, &shard).await?;
+        update_cache_by_set_shard(call_manager, client_pool, shard.clone()).await?;
+    }
     Ok(())
 }
 

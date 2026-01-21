@@ -12,47 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::offset::OffsetManager;
 use crate::storage::StorageAdapter;
 use axum::async_trait;
 use common_base::error::common::CommonError;
 use metadata_struct::storage::adapter_offset::{
-    AdapterConsumerGroupOffset, AdapterMessageExpireConfig, AdapterOffsetStrategy, AdapterShardInfo,
+    AdapterConsumerGroupOffset, AdapterOffsetStrategy, AdapterShardInfo,
 };
 use metadata_struct::storage::adapter_read_config::{AdapterReadConfig, AdapterWriteRespRow};
 use metadata_struct::storage::adapter_record::AdapterWriteRecord;
+use metadata_struct::storage::shard::EngineShard;
 use metadata_struct::storage::storage_record::StorageRecord;
 use std::collections::HashMap;
 use std::sync::Arc;
-use storage_engine::handler::adapter::AdapterHandler;
-use storage_engine::handler::expire::message_expire;
-pub struct StorageEngineAdapter {
-    adapter: Arc<AdapterHandler>,
-    offset_manager: Arc<OffsetManager>,
+use storage_engine::handler::adapter::StorageEngineHandler;
+pub struct EngineStorageAdapter {
+    adapter: Arc<StorageEngineHandler>,
 }
 
-impl StorageEngineAdapter {
-    pub async fn new(
-        adapter: Arc<AdapterHandler>,
-        offset_manager: Arc<OffsetManager>,
-    ) -> StorageEngineAdapter {
-        StorageEngineAdapter {
-            adapter,
-            offset_manager,
-        }
+impl EngineStorageAdapter {
+    pub async fn new(adapter: Arc<StorageEngineHandler>) -> EngineStorageAdapter {
+        EngineStorageAdapter { adapter }
     }
 }
 
 #[async_trait]
-impl StorageAdapter for StorageEngineAdapter {
+impl StorageAdapter for EngineStorageAdapter {
     async fn create_shard(&self, shard: &AdapterShardInfo) -> Result<(), CommonError> {
         self.adapter.create_shard(shard).await
     }
 
-    async fn list_shard(
-        &self,
-        shard: Option<String>,
-    ) -> Result<Vec<AdapterShardInfo>, CommonError> {
+    async fn list_shard(&self, shard: Option<String>) -> Result<Vec<EngineShard>, CommonError> {
         self.adapter.list_shard(shard).await
     }
 
@@ -116,12 +105,26 @@ impl StorageAdapter for StorageEngineAdapter {
         self.adapter.read_by_key(shard, key).await
     }
 
+    async fn delete_by_key(&self, shard: &str, key: &str) -> Result<(), CommonError> {
+        if let Err(e) = self.adapter.delete_by_key(shard, key).await {
+            return Err(CommonError::CommonError(e.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn delete_by_offset(&self, shard: &str, offset: u64) -> Result<(), CommonError> {
+        if let Err(e) = self.adapter.delete_by_offset(shard, offset).await {
+            return Err(CommonError::CommonError(e.to_string()));
+        }
+        Ok(())
+    }
+
     async fn get_offset_by_timestamp(
         &self,
         shard: &str,
         timestamp: u64,
         strategy: AdapterOffsetStrategy,
-    ) -> Result<Option<AdapterConsumerGroupOffset>, CommonError> {
+    ) -> Result<u64, CommonError> {
         self.adapter
             .get_offset_by_timestamp(shard, timestamp, strategy)
             .await
@@ -130,9 +133,8 @@ impl StorageAdapter for StorageEngineAdapter {
     async fn get_offset_by_group(
         &self,
         group: &str,
-        strategy: AdapterOffsetStrategy,
     ) -> Result<Vec<AdapterConsumerGroupOffset>, CommonError> {
-        self.offset_manager.get_offset(group, strategy).await
+        self.adapter.get_offset_by_group(group).await
     }
 
     async fn commit_offset(
@@ -140,11 +142,7 @@ impl StorageAdapter for StorageEngineAdapter {
         group_name: &str,
         offset: &HashMap<String, u64>,
     ) -> Result<(), CommonError> {
-        self.offset_manager.commit_offset(group_name, offset).await
-    }
-
-    async fn message_expire(&self, config: &AdapterMessageExpireConfig) -> Result<(), CommonError> {
-        message_expire(config).await
+        self.adapter.commit_offset(group_name, offset).await
     }
 
     async fn close(&self) -> Result<(), CommonError> {

@@ -17,24 +17,16 @@ use crate::{
         manager::ClientConnectionManager,
         packet::{build_read_req, read_resp_parse},
     },
-    core::{
-        cache::StorageCacheManager,
-        error::StorageEngineError,
-        segment::segment_validator,
-        shard::{get_shard_earliest_offset, get_shard_latest_offset},
-    },
-    memory::engine::MemoryStorageEngine,
-    rocksdb::engine::RocksDBStorageEngine,
-    segment::{
-        file::open_segment_write, index::read::get_in_segment_by_offset,
-        read::segment_read_by_offset, SegmentIdentity,
+    commitlog::{memory::engine::MemoryStorageEngine, rocksdb::engine::RocksDBStorageEngine},
+    core::{cache::StorageCacheManager, error::StorageEngineError, segment::segment_validator},
+    filesegment::{
+        index::read::get_in_segment_by_offset, offset::FileSegmentOffset,
+        read::segment_read_by_offset, segment_file::open_segment_write, SegmentIdentity,
     },
 };
-use common_config::broker::broker_config;
+use common_config::{broker::broker_config, storage::StorageType};
 use metadata_struct::storage::{
-    adapter_read_config::AdapterReadConfig,
-    shard::{EngineShard, EngineType},
-    storage_record::StorageRecord,
+    adapter_read_config::AdapterReadConfig, shard::EngineShard, storage_record::StorageRecord,
 };
 use protocol::storage::{
     codec::StorageEnginePacket,
@@ -82,18 +74,18 @@ pub async fn read_by_offset(
         return Err(StorageEngineError::SegmentNotExist(segment_iden.name()));
     };
 
-    segment_validator(cache_manager, shard_name, segment.segment_seq)?;
+    segment_validator(cache_manager, &shard, &segment, &segment_iden)?;
 
     let conf = broker_config();
     let results = if conf.broker_id == segment.leader {
-        match shard.engine_type {
-            EngineType::Memory => {
+        match shard.config.storage_type {
+            StorageType::EngineMemory => {
                 read_by_memory(memory_storage_engine, shard_name, offset, read_config).await?
             }
-            EngineType::RocksDB => {
+            StorageType::EngineRocksDB => {
                 read_by_rocksdb(rocksdb_storage_engine, shard_name, offset, read_config).await?
             }
-            EngineType::Segment => {
+            StorageType::EngineSegment => {
                 read_by_segment(
                     cache_manager,
                     rocksdb_engine_handler,
@@ -104,11 +96,17 @@ pub async fn read_by_offset(
                 )
                 .await?
             }
+            _ => {
+                return Err(StorageEngineError::CommonErrorStr(format!(
+                    "Unsupported storage type {:?} for shard {}",
+                    shard.config.storage_type, shard_name
+                )))
+            }
         }
     } else {
         read_by_remote(
             client_connection_manager,
-            conf.broker_id,
+            segment.leader,
             shard_name,
             offset,
             read_config,
@@ -128,6 +126,7 @@ pub async fn read_by_remote(
     let messages = vec![ReadReqMessage {
         shard_name: shard_name.to_string(),
         read_type: ReadType::Offset,
+        batch_call_source: false,
         filter: ReadReqFilter {
             offset: Some(offset),
             ..Default::default()
@@ -182,10 +181,10 @@ async fn read_by_segment(
     read_config: &AdapterReadConfig,
 ) -> Result<Vec<StorageRecord>, StorageEngineError> {
     let segment_iden = SegmentIdentity::new(shard_name, segment);
-    let segment_file = open_segment_write(cache_manager, &segment_iden).await?;
+    let mut segment_file = open_segment_write(cache_manager, &segment_iden).await?;
     let data_list = segment_read_by_offset(
         rocksdb_engine_handler,
-        &segment_file,
+        &mut segment_file,
         &segment_iden,
         offset,
         read_config.max_size,
@@ -202,26 +201,31 @@ fn get_segment_no_by_offset(
     shard_name: &str,
     offset: u64,
 ) -> Result<u32, StorageEngineError> {
-    match shard.engine_type {
-        EngineType::Memory | EngineType::RocksDB => Ok(shard.active_segment_seq),
-        EngineType::Segment => {
+    match shard.config.storage_type {
+        StorageType::EngineMemory | StorageType::EngineRocksDB => Ok(shard.active_segment_seq),
+        StorageType::EngineSegment => {
             if let Some(segment_no) = get_in_segment_by_offset(cache_manager, shard_name, offset)? {
                 Ok(segment_no)
             } else {
-                let earliest_offset = get_shard_earliest_offset(cache_manager, shard_name)?;
-                let latest_offset =
-                    get_shard_latest_offset(cache_manager, rocksdb_engine_handler, shard_name)?;
-                if offset <= earliest_offset.offset {
-                    Ok(earliest_offset.segment_no)
-                } else if offset >= latest_offset.offset {
-                    Ok(latest_offset.segment_no)
+                let file_segment_offset =
+                    FileSegmentOffset::new(rocksdb_engine_handler.clone(), cache_manager.clone());
+                let earliest_offset = file_segment_offset.get_earliest_offset(shard_name)?;
+                let latest_offset = file_segment_offset.get_latest_offset(shard_name)?;
+                if offset <= earliest_offset {
+                    Ok(shard.start_segment_seq)
+                } else if offset >= latest_offset {
+                    Ok(shard.active_segment_seq)
                 } else {
                     Err(StorageEngineError::CommonErrorStr(format!(
                         "Offset {} is within range [{}, {}] but no segment found",
-                        offset, earliest_offset.offset, latest_offset.offset
+                        offset, earliest_offset, latest_offset
                     )))
                 }
             }
         }
+        _ => Err(StorageEngineError::CommonErrorStr(format!(
+            "Unsupported storage type {:?} for shard {}",
+            shard.config.storage_type, shard_name
+        ))),
     }
 }

@@ -15,18 +15,20 @@
 use super::error::MqttBrokerError;
 use crate::handler::cache::MQTTCacheManager;
 use crate::handler::tool::ResultMqttBrokerError;
-use crate::storage::topic::TopicStorage;
 use crate::subscribe::manager::SubscribeManager;
 use bytes::Bytes;
+use common_base::tools::{now_second, unique_id};
+use common_config::storage::StorageType;
 use grpc_clients::pool::ClientPool;
-use metadata_struct::mqtt::topic::MQTTTopic;
-use metadata_struct::storage::adapter_offset::AdapterShardInfo;
+use metadata_struct::mqtt::topic::Topic;
+
+use metadata_struct::storage::shard::EngineShardConfig;
 use protocol::mqtt::common::{Publish, PublishProperties};
 use regex::Regex;
 use rocksdb_engine::metrics::mqtt::MQTTMetricsCache;
 use std::sync::Arc;
 use std::time::Duration;
-use storage_adapter::storage::ArcStorageAdapter;
+use storage_adapter::{driver::StorageDriverManager, topic::create_topic_full};
 use tokio::time::sleep;
 
 pub fn payload_format_validator(
@@ -138,37 +140,38 @@ pub async fn get_topic_alias(
 pub async fn try_init_topic(
     topic_name: &str,
     metadata_cache: &Arc<MQTTCacheManager>,
-    message_storage_adapter: &ArcStorageAdapter,
+    storage_driver_manager: &Arc<StorageDriverManager>,
     client_pool: &Arc<ClientPool>,
-) -> Result<MQTTTopic, MqttBrokerError> {
-    let topic = if let Some(tp) = metadata_cache.get_topic_by_name(topic_name) {
+) -> Result<Topic, MqttBrokerError> {
+    let topic = if let Some(tp) = metadata_cache.broker_cache.get_topic_by_name(topic_name) {
         tp
     } else {
-        // create Topic
-        let topic_storage = TopicStorage::new(client_pool.clone());
-        let topic = if let Some(topic) = topic_storage.get_topic(topic_name).await? {
-            topic
-        } else {
-            let topic = MQTTTopic::new(topic_name.to_owned());
-            topic_storage.save_topic(topic.clone()).await?;
-            topic
+        let uid = unique_id();
+        let topic = Topic {
+            topic_id: uid.clone(),
+            topic_name: topic_name.to_string(),
+            storage_type: StorageType::EngineRocksDB,
+            partition: 1,
+            replication: 1,
+            storage_name_list: Topic::create_partition_name(&uid, 1),
+            create_time: now_second(),
         };
 
-        metadata_cache.add_topic(topic_name, &topic);
+        let shard_config = EngineShardConfig {
+            replica_num: 1,
+            storage_type: StorageType::EngineRocksDB,
 
-        // Create the resource object of the storage layer
-        let list = message_storage_adapter
-            .list_shard(Some(topic_name.to_string()))
-            .await?;
-        if list.is_empty() {
-            let shard = AdapterShardInfo {
-                shard_name: topic_name.to_owned(),
-                replica_num: 1,
-            };
-            message_storage_adapter.create_shard(&shard).await?;
-        }
-        metadata_cache.set_re_calc_topic_rewrite(true).await;
-        return Ok(topic);
+            ..Default::default()
+        };
+        create_topic_full(
+            &metadata_cache.broker_cache,
+            storage_driver_manager,
+            client_pool,
+            &topic,
+            &shard_config,
+        )
+        .await?;
+        topic
     };
     Ok(topic)
 }
@@ -176,19 +179,14 @@ pub async fn try_init_topic(
 pub async fn delete_topic(
     cache_manager: &Arc<MQTTCacheManager>,
     topic_name: &str,
-    message_storage_adapter: &ArcStorageAdapter,
+    storage_driver_manager: &Arc<StorageDriverManager>,
     subscribe_manager: &Arc<SubscribeManager>,
     metrics_manager: &Arc<MQTTMetricsCache>,
 ) -> Result<(), MqttBrokerError> {
-    // delete shard
-    let list = message_storage_adapter
-        .list_shard(Some(topic_name.to_string()))
+    storage_driver_manager
+        .delete_storage_resource(topic_name)
         .await?;
-    if !list.is_empty() {
-        message_storage_adapter.delete_shard(topic_name).await?;
-    }
-
-    cache_manager.delete_topic(topic_name);
+    cache_manager.broker_cache.delete_topic(topic_name);
     metrics_manager.remove_topic(topic_name)?;
     subscribe_manager.remove_by_topic(topic_name);
     Ok(())

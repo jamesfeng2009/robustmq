@@ -35,7 +35,7 @@ checksum = "aae1277d39aeec15cb388266ecc24b11c80469deae6067e17a1a7aa9e5c1f234"
 
 [[package]]
 name = "admin-server"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "broker-core",
@@ -57,6 +57,7 @@ dependencies = [
  "serde",
  "serde_json",
  "storage-adapter",
+ "storage-engine",
  "thiserror 1.0.69",
  "tokio",
  "tower-http 0.5.2",
@@ -173,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "amqp-broker"
-version = "0.2.8"
+version = "0.2.10"
 
 [[package]]
 name = "android_system_properties"
@@ -986,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "broker-core"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "common-base",
  "common-config",
@@ -1002,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "broker-server"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "admin-server",
  "axum",
@@ -1105,8 +1106,20 @@ version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23cdc57ce23ac53c931e88a43d06d070a6fd142f2617be5855eb75efc9beb1c2"
 dependencies = [
- "bytecheck_derive",
- "ptr_meta",
+ "bytecheck_derive 0.6.12",
+ "ptr_meta 0.1.4",
+ "simdutf8",
+]
+
+[[package]]
+name = "bytecheck"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0caa33a2c0edca0419d15ac723dff03f1956f7978329b1e3b5fdaaaed9d3ca8b"
+dependencies = [
+ "bytecheck_derive 0.8.2",
+ "ptr_meta 0.3.1",
+ "rancor",
  "simdutf8",
 ]
 
@@ -1119,6 +1132,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "bytecheck_derive"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89385e82b5d1821d2219e0b095efa2cc1f246cbf99080f3be46a1a85c0d392d9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -1297,7 +1321,7 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "cli-bench"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "clap",
@@ -1317,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "cli-command"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "admin-server",
  "chrono",
@@ -1343,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "cmd"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "broker-server",
  "clap",
@@ -1389,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "common-base"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -1429,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "common-config"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "common-base",
  "serde",
@@ -1439,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "common-metrics"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "bytes",
@@ -1454,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "common-security"
-version = "0.2.8"
+version = "0.2.10"
 
 [[package]]
 name = "compression-codecs"
@@ -1927,13 +1951,18 @@ dependencies = [
 
 [[package]]
 name = "delay-message"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
+ "broker-core",
+ "bytes",
  "common-base",
+ "common-config",
  "common-metrics",
  "dashmap",
  "futures",
+ "grpc-clients",
  "metadata-struct",
+ "protocol",
  "storage-adapter",
  "tokio",
  "tokio-util",
@@ -2914,7 +2943,7 @@ dependencies = [
 
 [[package]]
 name = "grpc-clients"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "common-base",
  "dashmap",
@@ -3469,17 +3498,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-uring"
-version = "0.7.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046fa2d4d00aea763528b4950358d0ead425372445dc8ff86312b3c69ff7727b"
-dependencies = [
- "bitflags 2.9.4",
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "ipconfig"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3652,7 +3670,7 @@ dependencies = [
 
 [[package]]
 name = "kafka-broker"
-version = "0.2.8"
+version = "0.2.10"
 
 [[package]]
 name = "kafka-protocol"
@@ -3969,16 +3987,16 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
 name = "memmap2"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843a98750cd611cc2965a8213b53b43e715f13c37a9e096c6408e69990961db7"
+checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "meta-service"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "async-stream",
  "axum",
@@ -4013,14 +4031,15 @@ dependencies = [
 
 [[package]]
 name = "metadata-struct"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "bytes",
  "common-base",
+ "common-config",
  "dashmap",
  "protocol",
  "pulsar",
- "rkyv",
+ "rkyv 0.8.13",
  "serde",
  "serde_json",
  "tokio",
@@ -4082,7 +4101,7 @@ dependencies = [
 
 [[package]]
 name = "mmap-file"
-version = "0.2.8"
+version = "0.2.10"
 
 [[package]]
 name = "mobc"
@@ -4178,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "mqtt-broker"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4266,6 +4285,26 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+
+[[package]]
+name = "munge"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e17401f259eba956ca16491461b6e8f72913a0a114e39736ce404410f915a0c"
+dependencies = [
+ "munge_macro",
+]
+
+[[package]]
+name = "munge_macro"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4568f25ccbd45ab5d5603dc34318c1ec56b117531781260002151b8530a9f931"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
 
 [[package]]
 name = "mysql"
@@ -4402,7 +4441,7 @@ dependencies = [
 
 [[package]]
 name = "network-server"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "axum-extra",
@@ -5309,7 +5348,7 @@ dependencies = [
 
 [[package]]
 name = "pprof-monitor"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "bytes",
@@ -5678,7 +5717,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "bytes",
  "common-base",
@@ -5688,7 +5727,7 @@ dependencies = [
  "prost-build",
  "prost-validate",
  "prost-validate-build",
- "rkyv",
+ "rkyv 0.8.13",
  "robustmq-test",
  "serde",
  "thiserror 1.0.69",
@@ -5731,7 +5770,16 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0738ccf7ea06b608c10564b31debd4f5bc5e197fc8bfe088f68ae5ce81e7a4f1"
 dependencies = [
- "ptr_meta_derive",
+ "ptr_meta_derive 0.1.4",
+]
+
+[[package]]
+name = "ptr_meta"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b9a0cf95a1196af61d4f1cbdab967179516d9a4a4312af1f31948f8f6224a79"
+dependencies = [
+ "ptr_meta_derive 0.3.1",
 ]
 
 [[package]]
@@ -5743,6 +5791,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "ptr_meta_derive"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7347867d0a7e1208d93b46767be83e2b8f978c3dad35f775ac8d8847551d6fe1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -5954,6 +6013,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
+name = "rancor"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a063ea72381527c2a0561da9c80000ef822bdd7c3241b1cc1b12100e3df081ee"
+dependencies = [
+ "ptr_meta 0.3.1",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6014,7 +6082,7 @@ dependencies = [
 
 [[package]]
 name = "rate-limit"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "common-base",
  "dashmap",
@@ -6207,7 +6275,16 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71fe3824f5629716b1589be05dacd749f6aa084c87e00e016714a8cdfccc997c"
 dependencies = [
- "bytecheck",
+ "bytecheck 0.6.12",
+]
+
+[[package]]
+name = "rend"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cadadef317c2f20755a64d7fdc48f9e7178ee6b0e1f7fce33fa60f1d68a276e6"
+dependencies = [
+ "bytecheck 0.8.2",
 ]
 
 [[package]]
@@ -6328,31 +6405,61 @@ dependencies = [
 
 [[package]]
 name = "rkyv"
-version = "0.7.45"
+version = "0.7.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9008cd6385b9e161d8229e1f6549dd23c3d022f132a2ea37ac3a10ac4935779b"
+checksum = "2297bf9c81a3f0dc96bc9521370b88f054168c29826a75e89c55ff196e7ed6a1"
 dependencies = [
  "bitvec",
- "bytecheck",
+ "bytecheck 0.6.12",
  "bytes",
  "hashbrown 0.12.3",
- "ptr_meta",
- "rend",
- "rkyv_derive",
+ "ptr_meta 0.1.4",
+ "rend 0.4.2",
+ "rkyv_derive 0.7.46",
  "seahash",
  "tinyvec",
  "uuid",
 ]
 
 [[package]]
-name = "rkyv_derive"
-version = "0.7.45"
+name = "rkyv"
+version = "0.8.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "503d1d27590a2b0a3a4ca4c94755aa2875657196ecbf401a42eff41d7de532c0"
+checksum = "8b2e88acca7157d83d789836a3987dafc12bc3d88a050e54b8fe9ea4aaa29d20"
+dependencies = [
+ "bytecheck 0.8.2",
+ "bytes",
+ "hashbrown 0.16.0",
+ "indexmap 2.11.4",
+ "munge",
+ "ptr_meta 0.3.1",
+ "rancor",
+ "rend 0.5.3",
+ "rkyv_derive 0.8.13",
+ "tinyvec",
+ "uuid",
+]
+
+[[package]]
+name = "rkyv_derive"
+version = "0.7.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84d7b42d4b8d06048d3ac8db0eb31bcb942cbeb709f0b5f2b2ebde398d3038f5"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "rkyv_derive"
+version = "0.8.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f6dffea3c91fa91a3c0fc8a061b0e27fef25c6304728038a6d6bcb1c58ba9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -6363,7 +6470,7 @@ checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
 name = "robustmq-macro"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "async-trait",
  "macrotest",
@@ -6377,7 +6484,7 @@ dependencies = [
 
 [[package]]
 name = "robustmq-test"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "admin-server",
  "apache-avro",
@@ -6400,6 +6507,7 @@ dependencies = [
  "serde",
  "serde_json",
  "storage-adapter",
+ "storage-engine",
  "tokio",
  "tokio-util",
  "tonic",
@@ -6419,7 +6527,7 @@ dependencies = [
 
 [[package]]
 name = "rocksdb-engine"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "common-base",
  "common-config",
@@ -6453,7 +6561,7 @@ dependencies = [
 
 [[package]]
 name = "rule-engine"
-version = "0.2.8"
+version = "0.2.10"
 
 [[package]]
 name = "rust-ini"
@@ -6476,7 +6584,7 @@ dependencies = [
  "bytes",
  "num-traits",
  "rand 0.8.5",
- "rkyv",
+ "rkyv 0.7.46",
  "serde",
  "serde_json",
 ]
@@ -6760,7 +6868,7 @@ dependencies = [
 
 [[package]]
 name = "schema-register"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "apache-avro",
  "common-base",
@@ -7455,9 +7563,10 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage-adapter"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
+ "broker-core",
  "bytes",
  "common-base",
  "common-config",
@@ -7481,7 +7590,7 @@ dependencies = [
 
 [[package]]
 name = "storage-engine"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "axum",
  "broker-core",
@@ -7492,11 +7601,13 @@ dependencies = [
  "futures",
  "futures-util",
  "grpc-clients",
+ "memmap2",
  "metadata-struct",
  "network-server",
+ "parking_lot",
  "prost",
  "protocol",
- "rkyv",
+ "rkyv 0.8.13",
  "rocksdb",
  "rocksdb-engine",
  "serde",
@@ -7747,7 +7858,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "third-driver"
-version = "0.2.8"
+version = "0.2.10"
 dependencies = [
  "common-base",
  "mysql",
@@ -7873,30 +7984,27 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.47.1"
+version = "1.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89e49afdadebb872d3145a5638b59eb0691ea23e46ca484037cfab3b76b95038"
+checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
 dependencies = [
- "backtrace",
  "bytes",
- "io-uring",
  "libc",
  "mio",
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "slab",
  "socket2 0.6.1",
  "tokio-macros",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "tokio-macros"
-version = "2.5.0"
+version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e06d43f1345a3bcd39f6a56dbb7dcab2ba47e68e8ac134855e7e2bdbaf8cab8"
+checksum = "af407857209536a95c8e56f8231ef2c2e2aff839b22e07a1ffcbc617e9db9fa5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7984,9 +8092,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.16"
+version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14307c986784f72ef81c89db7d9e28d6ac26d16213b109ea501696195e6e3ce5"
+checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",

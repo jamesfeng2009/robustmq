@@ -16,7 +16,7 @@ use super::PREFIX_ENGINE;
 
 #[inline]
 fn shard_base(shard: &str) -> String {
-    format!("{}/{}/", PREFIX_ENGINE, shard)
+    format!("{}{}/", PREFIX_ENGINE, shard)
 }
 
 #[inline]
@@ -24,9 +24,17 @@ pub fn segment_base(shard: &str, segment: u32) -> String {
     format!("{}segment/{}/{:010}/", PREFIX_ENGINE, shard, segment)
 }
 
-// shard cursor offset
-pub fn offset_segment_cursor_offset(shard: &str) -> String {
-    format!("{}cursor/offset", shard_base(shard))
+// shard offset
+pub fn shard_earliest_offset(shard: &str) -> String {
+    format!("{}earliest/offset", shard_base(shard))
+}
+
+pub fn shard_high_watermark_offset(shard: &str) -> String {
+    format!("{}high_watermark/offset", shard_base(shard))
+}
+
+pub fn shard_latest_offset(shard: &str) -> String {
+    format!("{}latest/offset", shard_base(shard))
 }
 
 // Segment start/end  offset/timestamp
@@ -36,6 +44,10 @@ pub fn offset_segment_start(shard: &str, segment: u32) -> String {
 
 pub fn offset_segment_end(shard: &str, segment: u32) -> String {
     format!("{}offset/end", segment_base(shard, segment))
+}
+
+pub fn offset_segment_high_watermark(shard: &str, segment: u32) -> String {
+    format!("{}offset/high-watermark", segment_base(shard, segment))
 }
 
 pub fn timestamp_segment_start(shard: &str, segment: u32) -> String {

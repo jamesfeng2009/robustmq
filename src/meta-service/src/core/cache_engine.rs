@@ -24,6 +24,13 @@ impl CacheManager {
         self.shard_list.insert(shard.shard_name.clone(), shard);
     }
 
+    pub fn get_shard(&self, shard_name: &str) -> Option<EngineShard> {
+        if let Some(shard) = self.shard_list.get(shard_name) {
+            return Some(shard.clone());
+        }
+        None
+    }
+
     pub fn remove_shard(&self, shard_name: &str) {
         self.shard_list.remove(shard_name);
         self.segment_list.remove(shard_name);
@@ -154,12 +161,7 @@ mod tests {
             active_segment_seq: 0,
             last_segment_seq: 0,
             status: metadata_struct::storage::shard::EngineShardStatus::Run,
-            config: metadata_struct::storage::shard::EngineShardConfig {
-                replica_num: 3,
-                max_segment_size: 1024000,
-            },
-            replica_num: 3,
-            engine_type: metadata_struct::storage::shard::EngineType::Segment,
+            config: metadata_struct::storage::shard::EngineShardConfig::default(),
             create_time: now_second(),
         }
     }

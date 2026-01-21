@@ -19,7 +19,7 @@ use crate::config::{
     MqttSystemMonitor, Network, Rocksdb, Runtime, SchemaFailedOperation, SchemaStrategy,
     StorageOffset, StorageRuntime,
 };
-use crate::storage::{StorageAdapterConfig, StorageAdapterType};
+use crate::storage::{StorageAdapterConfig, StorageType};
 use common_base::enum_type::delay_type::DelayType;
 use common_base::role::{ROLE_BROKER, ROLE_META};
 use common_base::runtime::get_runtime_worker_threads;
@@ -89,7 +89,12 @@ pub fn default_place_runtime() -> MetaRuntime {
     MetaRuntime {
         heartbeat_check_time_ms: 1000,
         heartbeat_timeout_ms: 30000,
+        raft_write_timeout_sec: 30,
     }
+}
+
+pub fn default_raft_write_timeout_sec() -> u64 {
+    30
 }
 
 pub fn default_mqtt_server() -> MqttServer {
@@ -120,7 +125,7 @@ pub fn default_mqtt_auth_config() -> MqttAuthConfig {
 
 pub fn default_message_storage() -> StorageAdapterConfig {
     StorageAdapterConfig {
-        storage_type: StorageAdapterType::Memory,
+        storage_type: StorageType::EngineMemory,
         ..Default::default()
     }
 }
@@ -200,7 +205,7 @@ pub fn default_storage_offset() -> StorageOffset {
     StorageOffset { enable_cache: true }
 }
 
-pub fn default_journal_runtime() -> StorageRuntime {
+pub fn default_engine_runtime() -> StorageRuntime {
     StorageRuntime {
         tcp_port: 1778,
         max_segment_size: 1073741824,

@@ -21,6 +21,7 @@ license.workspace = true
 
 [dependencies]
 common-base.workspace = true
+common-config.workspace = true
 storage-adapter.workspace = true
 metadata-struct.workspace = true
 dashmap.workspace = true
@@ -29,3 +30,8 @@ tokio-util.workspace = true
 tracing.workspace = true
 futures.workspace = true
 common-metrics.workspace = true
+bytes.workspace = true
+grpc-clients.workspace = true
+protocol.workspace = true
+
+broker-core.workspace = true

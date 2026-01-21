@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use common_base::{error::common::CommonError, utils::serialize};
+use common_base::{
+    error::common::CommonError,
+    tools::{now_second, unique_id},
+    utils::serialize,
+};
+use common_config::storage::StorageType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -25,12 +30,22 @@ pub struct EngineShard {
     pub last_segment_seq: u32,
     pub status: EngineShardStatus,
     pub config: EngineShardConfig,
-    pub engine_type: EngineType,
-    pub replica_num: u32,
     pub create_time: u64,
 }
 
 impl EngineShard {
+    pub fn new(shard_name: String, config: EngineShardConfig) -> Self {
+        EngineShard {
+            shard_uid: unique_id(),
+            shard_name,
+            start_segment_seq: 0,
+            active_segment_seq: 0,
+            last_segment_seq: 0,
+            status: EngineShardStatus::Run,
+            config,
+            create_time: now_second(),
+        }
+    }
     pub fn encode(&self) -> Result<Vec<u8>, CommonError> {
         serialize::serialize(self)
     }
@@ -48,10 +63,23 @@ pub enum EngineShardStatus {
     Deleting,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EngineShardConfig {
     pub replica_num: u32,
+    pub storage_type: StorageType,
     pub max_segment_size: u64,
+    pub retention_sec: u64,
+}
+
+impl Default for EngineShardConfig {
+    fn default() -> Self {
+        Self {
+            replica_num: 1,
+            max_segment_size: 1073741824,
+            retention_sec: 86400,
+            storage_type: StorageType::EngineMemory,
+        }
+    }
 }
 
 impl EngineShardConfig {
@@ -62,12 +90,4 @@ impl EngineShardConfig {
     pub fn decode(data: &[u8]) -> Result<Self, CommonError> {
         serialize::deserialize(data)
     }
-}
-
-#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum EngineType {
-    #[default]
-    Segment,
-    Memory,
-    RocksDB,
 }

@@ -303,7 +303,8 @@ impl AdminHttpClient {
         T: Serialize,
         R: for<'de> Deserialize<'de>,
     {
-        self.post(&api_path(MQTT_SESSION_LIST_PATH), request).await
+        self.get_with_params(&api_path(MQTT_SESSION_LIST_PATH), request)
+            .await
     }
 
     /// Get topic list
@@ -653,6 +654,77 @@ impl AdminHttpClient {
         self.post_raw(&api_path(MQTT_SUBSCRIBE_DETAIL_PATH), request)
             .await
     }
+
+    // ========== Storage Engine APIs ==========
+
+    /// Get shard list
+    pub async fn get_shard_list<T, R>(
+        &self,
+        request: &T,
+    ) -> Result<PageReplyData<R>, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.post(&api_path(STORAGE_ENGINE_SHARD_LIST_PATH), request)
+            .await
+    }
+
+    /// Create shard
+    pub async fn create_shard<T>(&self, request: &T) -> Result<String, HttpClientError>
+    where
+        T: Serialize,
+    {
+        self.post_raw(&api_path(STORAGE_ENGINE_SHARD_CREATE_PATH), request)
+            .await
+    }
+
+    /// Delete shard
+    pub async fn delete_shard<T>(&self, request: &T) -> Result<String, HttpClientError>
+    where
+        T: Serialize,
+    {
+        self.post_raw(&api_path(STORAGE_ENGINE_SHARD_DELETE_PATH), request)
+            .await
+    }
+
+    /// Get segment list
+    pub async fn get_segment_list<T>(&self, request: &T) -> Result<String, HttpClientError>
+    where
+        T: Serialize,
+    {
+        self.post_raw(&api_path(STORAGE_ENGINE_SEGMENT_LIST_PATH), request)
+            .await
+    }
+
+    /// Get offset by timestamp
+    pub async fn get_offset_by_timestamp<T, R>(&self, request: &T) -> Result<R, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.post(&api_path(STORAGE_ENGINE_OFFSET_BY_TIMESTAMP_PATH), request)
+            .await
+    }
+
+    /// Get offset by group
+    pub async fn get_offset_by_group<T, R>(&self, request: &T) -> Result<R, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.post(&api_path(STORAGE_ENGINE_OFFSET_BY_GROUP_PATH), request)
+            .await
+    }
+
+    /// Commit offset
+    pub async fn commit_offset<T>(&self, request: &T) -> Result<String, HttpClientError>
+    where
+        T: Serialize,
+    {
+        self.post_raw(&api_path(STORAGE_ENGINE_OFFSET_COMMIT_PATH), request)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -723,6 +795,7 @@ mod tests {
                 let response = AdminServerResponse {
                     code: 0,
                     data: TestResponse { value: params.key },
+                    error: None,
                 };
                 axum::Json(response)
             }),

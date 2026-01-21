@@ -15,23 +15,17 @@
 #[cfg(test)]
 mod tests {
     use common_base::tools::unique_id;
-    use common_config::broker::{default_broker_config, init_broker_conf_by_config};
     use grpc_clients::pool::ClientPool;
-    use metadata_struct::storage::adapter_offset::AdapterOffsetStrategy;
     use rocksdb_engine::test::test_rocksdb_instance;
     use std::{collections::HashMap, sync::Arc, time::Duration};
-    use storage_adapter::offset::OffsetManager;
+    use storage_engine::group::OffsetManager;
     use tokio::{sync::broadcast, time::sleep};
 
     #[tokio::test]
     async fn offset_manager_storage() {
-        let mut config = default_broker_config();
-        config.storage_offset.enable_cache = false;
-        init_broker_conf_by_config(config.clone());
-
         let rocksdb_engine_handler = test_rocksdb_instance();
         let client_pool = Arc::new(ClientPool::new(3));
-        let offset_manager = OffsetManager::new(client_pool, rocksdb_engine_handler);
+        let offset_manager = OffsetManager::new(client_pool, rocksdb_engine_handler, false);
         let group_name = unique_id();
         let mut offset = HashMap::new();
         offset.insert("k1".to_string(), 3);
@@ -40,10 +34,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rep_offset = offset_manager
-            .get_offset(&group_name, AdapterOffsetStrategy::Earliest)
-            .await
-            .unwrap();
+        let rep_offset = offset_manager.get_offset(&group_name).await.unwrap();
         assert_eq!(rep_offset.len(), 1);
         let o1 = rep_offset.first().unwrap();
         assert_eq!(o1.offset, 3);
@@ -51,13 +42,9 @@ mod tests {
 
     #[tokio::test]
     async fn offset_manager_offset_storage() {
-        let mut config = default_broker_config();
-        config.storage_offset.enable_cache = true;
-        init_broker_conf_by_config(config.clone());
-
         let rocksdb_engine_handler = test_rocksdb_instance();
         let client_pool = Arc::new(ClientPool::new(3));
-        let offset_manager = OffsetManager::new(client_pool, rocksdb_engine_handler);
+        let offset_manager = OffsetManager::new(client_pool, rocksdb_engine_handler, true);
 
         // start meta service
         let (stop_send, _) = broadcast::channel(2);
@@ -76,10 +63,7 @@ mod tests {
             .unwrap();
 
         sleep(Duration::from_secs(2)).await;
-        let rep_offset = offset_manager
-            .get_offset(&group_name, AdapterOffsetStrategy::Earliest)
-            .await
-            .unwrap();
+        let rep_offset = offset_manager.get_offset(&group_name).await.unwrap();
         assert_eq!(rep_offset.len(), 1);
         let o1 = rep_offset.first().unwrap();
         assert_eq!(o1.offset, 3);

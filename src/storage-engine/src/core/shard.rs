@@ -15,24 +15,26 @@
 use super::cache::StorageCacheManager;
 use super::error::StorageEngineError;
 use super::segment::delete_local_segment;
-use crate::segment::file::data_fold_shard;
-use crate::segment::index::read::{get_in_segment_by_timestamp, get_index_data_by_timestamp};
-use crate::segment::offset::get_shard_cursor_offset;
-use crate::segment::SegmentIdentity;
-use common_config::broker::broker_config;
+use crate::filesegment::segment_file::data_fold_shard;
+use crate::filesegment::SegmentIdentity;
+use common_config::{broker::broker_config, storage::StorageType};
 use grpc_clients::pool::ClientPool;
-use metadata_struct::storage::adapter_offset::{
-    AdapterConsumerGroupOffset, AdapterOffsetStrategy, AdapterShardInfo,
-};
-use metadata_struct::storage::shard::EngineShardConfig;
+use metadata_struct::storage::adapter_offset::AdapterShardInfo;
 use protocol::meta::meta_service_journal::{CreateShardRequest, DeleteShardRequest};
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::fs::remove_dir_all;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::time::sleep;
+use std::time::Duration;
+use tokio::time::{sleep, timeout};
 use tracing::{error, info};
+
+#[derive(Clone, Debug, Default)]
+pub struct ShardOffsetState {
+    pub earliest_offset: u64,
+    pub high_watermark_offset: u64,
+    pub latest_offset: u64,
+}
 
 pub fn delete_local_shard(
     cache_manager: Arc<StorageCacheManager>,
@@ -93,16 +95,13 @@ pub async fn create_shard_to_place(
     client_pool: &Arc<ClientPool>,
     shard: &AdapterShardInfo,
 ) -> Result<(), StorageEngineError> {
-    let shard_name = &shard.shard_name;
-    let config = EngineShardConfig {
-        replica_num: shard.replica_num,
-        max_segment_size: 1073741824,
-    };
+    is_support_storage_type(shard.config.storage_type)?;
 
+    let shard_name = &shard.shard_name;
     let conf: &common_config::config::BrokerConfig = broker_config();
     let request = CreateShardRequest {
         shard_name: shard_name.to_string(),
-        shard_config: config.encode()?,
+        shard_config: shard.config.encode()?,
     };
     grpc_clients::meta::storage::call::create_shard(
         client_pool,
@@ -111,19 +110,41 @@ pub async fn create_shard_to_place(
     )
     .await?;
 
-    let start = Instant::now();
-    loop {
-        if cache_manager.shards.contains_key(shard_name) {
-            info!("Shard {} created successfully", shard_name);
-            return Ok(());
-        }
-        if start.elapsed().as_millis() >= 3000 {
-            break;
-        }
+    // Wait for shard to be created in local cache with timeout
+    let wait_result = timeout(Duration::from_secs(3), async {
+        loop {
+            let segment_iden = SegmentIdentity::new(shard_name, 0);
+            if shard.config.storage_type == StorageType::EngineSegment
+                && cache_manager.shards.contains_key(shard_name)
+                && cache_manager.get_segment(&segment_iden).is_some()
+                && cache_manager.get_segment_meta(&segment_iden).is_some()
+            {
+                return;
+            }
 
-        sleep(Duration::from_millis(100)).await
+            if (shard.config.storage_type == StorageType::EngineMemory
+                || shard.config.storage_type == StorageType::EngineRocksDB)
+                && cache_manager.shards.contains_key(shard_name)
+                && cache_manager.get_segment(&segment_iden).is_some()
+            {
+                return;
+            }
+
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    match wait_result {
+        Ok(_) => {
+            info!("Shard {} created successfully", shard_name);
+            Ok(())
+        }
+        Err(_) => Err(StorageEngineError::CommonErrorStr(format!(
+            "Timeout waiting for shard '{}' to be created in local cache after 3 seconds",
+            shard_name
+        ))),
     }
-    Ok(())
 }
 
 pub async fn delete_shard_to_place(
@@ -144,87 +165,16 @@ pub async fn delete_shard_to_place(
     Ok(())
 }
 
-pub fn get_shard_earliest_offset(
-    cache_manager: &Arc<StorageCacheManager>,
-    shard_name: &str,
-) -> Result<AdapterConsumerGroupOffset, StorageEngineError> {
-    let shard = cache_manager
-        .shards
-        .get(shard_name)
-        .ok_or_else(|| StorageEngineError::ShardNotExist(shard_name.to_string()))?;
-
-    let segment_iden = SegmentIdentity::new(shard_name, shard.start_segment_seq);
-    let segment_meta = cache_manager
-        .get_segment_meta(&segment_iden)
-        .ok_or_else(|| StorageEngineError::SegmentNotExist(segment_iden.name()))?;
-
-    if segment_meta.start_offset < 0 {
-        return Err(StorageEngineError::CommonErrorStr(format!(
-            "Invalid start offset {} for shard {} segment {}",
-            segment_meta.start_offset, shard_name, shard.start_segment_seq
-        )));
-    }
-
-    Ok(AdapterConsumerGroupOffset {
-        shard_name: shard_name.to_string(),
-        segment_no: shard.start_segment_seq,
-        offset: segment_meta.start_offset as u64,
-        ..Default::default()
-    })
-}
-
-pub fn get_shard_latest_offset(
-    cache_manager: &Arc<StorageCacheManager>,
-    rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    shard_name: &str,
-) -> Result<AdapterConsumerGroupOffset, StorageEngineError> {
-    let shard = cache_manager
-        .shards
-        .get(shard_name)
-        .ok_or_else(|| StorageEngineError::ShardNotExist(shard_name.to_string()))?;
-
-    let offset =
-        get_shard_cursor_offset(rocksdb_engine_handler, shard_name, shard.active_segment_seq)?;
-
-    Ok(AdapterConsumerGroupOffset {
-        shard_name: shard_name.to_string(),
-        segment_no: shard.active_segment_seq,
-        offset,
-        ..Default::default()
-    })
-}
-
-pub fn get_shard_offset_by_timestamp(
-    cache_manager: &Arc<StorageCacheManager>,
-    rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    shard_name: &str,
-    timestamp: u64,
-    strategy: AdapterOffsetStrategy,
-) -> Result<AdapterConsumerGroupOffset, StorageEngineError> {
-    if let Some(segment) = get_in_segment_by_timestamp(cache_manager, shard_name, timestamp as i64)?
+pub fn is_support_storage_type(storage_type: StorageType) -> Result<(), StorageEngineError> {
+    if storage_type == StorageType::EngineMemory
+        || storage_type == StorageType::EngineRocksDB
+        || storage_type == StorageType::EngineSegment
     {
-        let segment_iden = SegmentIdentity::new(shard_name, segment);
-        if let Some(index_data) =
-            get_index_data_by_timestamp(rocksdb_engine_handler, &segment_iden, timestamp)?
-        {
-            Ok(AdapterConsumerGroupOffset {
-                shard_name: shard_name.to_string(),
-                segment_no: segment,
-                offset: index_data.offset,
-                ..Default::default()
-            })
-        } else {
-            Err(StorageEngineError::CommonErrorStr(format!(
-                "No index data found for timestamp {} in segment {}",
-                timestamp, segment
-            )))
-        }
-    } else {
-        match strategy {
-            AdapterOffsetStrategy::Earliest => get_shard_earliest_offset(cache_manager, shard_name),
-            AdapterOffsetStrategy::Latest => {
-                get_shard_latest_offset(cache_manager, rocksdb_engine_handler, shard_name)
-            }
-        }
+        return Ok(());
     }
+
+    Err(StorageEngineError::CommonErrorStr(format!(
+        "Unsupported storage type '{:?}'. Supported types are: EngineMemory, EngineRocksDB, EngineSegment",
+        storage_type
+    )))
 }
