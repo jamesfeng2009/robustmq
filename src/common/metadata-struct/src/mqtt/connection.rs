@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::Arc;
-
 use common_base::tools::now_second;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -29,8 +26,11 @@ pub struct MQTTConnection {
     pub is_login: bool,
     // The IP address of the client that initiated the connection
     pub source_ip_addr: String,
+    //
+    pub clean_session: bool,
+
     // The user name of the client that initiated the connection
-    pub login_user: String,
+    pub login_user: Option<String>,
     // When the client does not report a heartbeat, the maximum survival time of the connection,
     pub keep_alive: u16,
     // Records the Topic alias information for the connection dimension
@@ -43,12 +43,6 @@ pub struct MQTTConnection {
     pub topic_alias_max: u16,
     // Flags whether to return a detailed error message to the client when an error occurs.
     pub request_problem_info: u8,
-    // Flow control part keeps track of how many QOS 1 and QOS 2 messages are still pending on the connection
-    #[serde(skip_serializing, skip_deserializing)]
-    pub receive_qos_message: Arc<AtomicIsize>,
-    // Flow control part keeps track of how many QOS 1 and QOS 2 messages are still pending on the connection
-    #[serde(skip_serializing, skip_deserializing)]
-    pub sender_qos_message: Arc<AtomicIsize>,
     // Time when the connection was created
     pub create_time: u64,
 }
@@ -62,6 +56,7 @@ pub struct ConnectionConfig {
     pub request_problem_info: u8,
     pub keep_alive: u16,
     pub source_ip_addr: String,
+    pub clean_session: bool,
 }
 
 impl MQTTConnection {
@@ -76,44 +71,19 @@ impl MQTTConnection {
             topic_alias: DashMap::with_capacity(2),
             topic_alias_max: config.topic_alias_max,
             request_problem_info: config.request_problem_info,
-            receive_qos_message: Arc::new(AtomicIsize::new(0)),
-            sender_qos_message: Arc::new(AtomicIsize::new(0)),
             create_time: now_second(),
             source_ip_addr: config.source_ip_addr,
-            ..Default::default()
+            clean_session: config.clean_session,
+            login_user: None,
         }
-    }
-
-    pub fn login_success(&mut self, user_name: String) {
-        self.is_login = true;
-        self.login_user = user_name;
     }
 
     pub fn is_response_problem_info(&self) -> bool {
         self.request_problem_info == 1
     }
 
-    pub fn get_recv_qos_message(&self) -> isize {
-        self.receive_qos_message.fetch_add(0, Ordering::Relaxed)
-    }
-
-    pub fn recv_qos_message_incr(&self) {
-        self.receive_qos_message.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn recv_qos_message_decr(&self) {
-        self.receive_qos_message.fetch_add(-1, Ordering::Relaxed);
-    }
-
-    pub fn get_send_qos_message(&self) -> isize {
-        self.sender_qos_message.fetch_add(0, Ordering::Relaxed)
-    }
-
-    pub fn send_qos_message_incr(&self) {
-        self.sender_qos_message.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn send_qos_message_decr(&self) {
-        self.sender_qos_message.fetch_add(-1, Ordering::Relaxed);
+    pub fn login_success(&mut self, user_name: String) {
+        self.is_login = true;
+        self.login_user = Some(user_name);
     }
 }

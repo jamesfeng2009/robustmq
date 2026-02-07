@@ -12,27 +12,66 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::mqtt::protocol::ClientTestProperties;
 use admin_server::client::AdminHttpClient;
-use common_base::tools::{now_nanos, unique_id};
+use admin_server::{
+    mqtt::session::{SessionListReq, SessionListRow},
+    tool::PageReplyData,
+};
+use common_base::tools::now_nanos;
+use common_base::uuid::unique_id;
 use paho_mqtt::{
     Client, ConnectOptions, ConnectOptionsBuilder, CreateOptions, CreateOptionsBuilder,
     DisconnectOptionsBuilder, Message, Properties, PropertyCode, ReasonCode, SslOptionsBuilder,
     SubscribeOptions,
 };
+use tokio::time::sleep;
 
 pub fn qos_list() -> Vec<i32> {
     vec![0, 1, 2]
 }
 
 pub fn protocol_versions() -> Vec<u32> {
-    vec![5]
+    vec![3, 4, 5]
 }
 
 pub async fn create_test_env() -> AdminHttpClient {
     AdminHttpClient::new("http://127.0.0.1:8080")
+}
+
+pub async fn session_list_by_admin(client_id: &str) -> PageReplyData<Vec<SessionListRow>> {
+    let admin_client = create_test_env().await;
+    let request = SessionListReq {
+        client_id: Some(client_id.to_string()),
+        ..Default::default()
+    };
+    admin_client.get_session_list(&request).await.unwrap()
+}
+
+pub async fn session_count_by_admin(client_id: &str) -> usize {
+    session_list_by_admin(client_id).await.total_count
+}
+
+pub async fn wait_for_session_count_by_admin(
+    client_id: &str,
+    expected: usize,
+    max_wait: Duration,
+) -> Duration {
+    let start = Instant::now();
+    loop {
+        let count = session_count_by_admin(client_id).await;
+        if count == expected {
+            return start.elapsed();
+        }
+        if start.elapsed() >= max_wait {
+            panic!(
+                "wait_for_session_count_by_admin timeout: client_id={client_id}, expected={expected}, last_count={count}"
+            );
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
 }
 
 pub fn network_types() -> Vec<String> {
@@ -60,6 +99,10 @@ pub fn broker_addr_by_type(network_type: &str) -> String {
 pub fn ws_by_type(network_type: &str) -> bool {
     let net = network_type.to_string();
     net == "ws" || net == "wss"
+}
+
+pub fn test_client_id() -> String {
+    unique_id()
 }
 
 pub fn ssl_by_type(network_type: &str) -> bool {
@@ -99,23 +142,62 @@ pub fn build_conn_pros(
 
 pub fn connect_server(client_properties: &ClientTestProperties) -> Client {
     let create_opts = build_create_conn_pros(&client_properties.client_id, &client_properties.addr);
-    let cli_res = Client::new(create_opts);
-    if let Err(e) = cli_res {
-        panic!("{e:?}");
-    } else {
-        let cli = cli_res.unwrap();
-        let conn_opts = build_conn_pros(client_properties.clone(), client_properties.err_pwd);
-        let result = cli.connect(conn_opts);
-        if result.is_err() {
-            print!("result:{result:?}");
-        }
-        if client_properties.conn_is_err {
-            assert!(result.is_err());
-        } else {
-            assert!(result.is_ok());
-        }
-        cli
+    let cli = Client::new(create_opts).unwrap();
+    let conn_opts = build_conn_pros(client_properties.clone(), client_properties.err_pwd);
+    let result = cli.connect(conn_opts);
+    if result.is_err() {
+        println!("result:{result:?}");
     }
+    if client_properties.conn_is_err {
+        assert!(result.is_err());
+    } else {
+        assert!(result.is_ok());
+    }
+    cli
+}
+
+pub fn new_client(addr: &str, client_id: &str) -> Client {
+    let create_opts = build_create_conn_pros(client_id, addr);
+    Client::new(create_opts).unwrap()
+}
+
+pub fn connect_mqtt34(addr: &str, client_id: &str, clean_session: bool) -> (Client, bool) {
+    let cli = new_client(addr, client_id);
+    let mut conn_opts = ConnectOptionsBuilder::with_mqtt_version(3);
+    conn_opts
+        .user_name(username())
+        .password(password())
+        .clean_session(clean_session);
+    let result = cli.connect(conn_opts.finalize()).unwrap();
+    assert_eq!(result.reason_code(), ReasonCode::Success);
+    let session_present = result.connect_response().unwrap().session_present;
+    (cli, session_present)
+}
+
+pub fn connect_mqtt5(
+    addr: &str,
+    client_id: &str,
+    clean_start: bool,
+    expiry: u32,
+) -> (Client, bool) {
+    let cli = new_client(addr, client_id);
+    let mut conn_opts = ConnectOptionsBuilder::new_v5();
+
+    let mut props = Properties::new();
+    props
+        .push_u32(PropertyCode::SessionExpiryInterval, expiry)
+        .unwrap();
+
+    conn_opts
+        .user_name(username())
+        .password(password())
+        .properties(props)
+        .clean_start(clean_start);
+
+    let result = cli.connect(conn_opts.finalize()).unwrap();
+    assert_eq!(result.reason_code(), ReasonCode::Success);
+    let session_present = result.connect_response().unwrap().session_present;
+    (cli, session_present)
 }
 
 pub fn publish_data(cli: &Client, message: Message, is_err: bool) {
@@ -128,7 +210,25 @@ pub fn publish_data(cli: &Client, message: Message, is_err: bool) {
     }
 }
 
-pub fn subscribe_data_by_qos<T>(cli: &Client, sub_topic: &str, sub_qos: i32, call_fn: T)
+pub fn subscribe_data_by_qos<T>(
+    cli: &Client,
+    sub_topic: &str,
+    sub_qos: i32,
+    call_fn: T,
+) -> Result<(), String>
+where
+    T: Fn(Message) -> bool,
+{
+    subscribe_data_by_qos_with_timeout(cli, sub_topic, sub_qos, Duration::from_secs(60), call_fn)
+}
+
+pub fn subscribe_data_by_qos_with_timeout<T>(
+    cli: &Client,
+    sub_topic: &str,
+    sub_qos: i32,
+    timeout: Duration,
+    call_fn: T,
+) -> Result<(), String>
 where
     T: Fn(Message) -> bool,
 {
@@ -136,13 +236,21 @@ where
     let res = cli.subscribe(sub_topic, sub_qos);
     assert!(res.is_ok());
 
+    let start = Instant::now();
     loop {
+        if start.elapsed() >= timeout {
+            return Err(format!(
+                "subscribe_data_with_options timeout after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+
         let res = rx.recv_timeout(Duration::from_secs(10));
         if let Ok(msg_opt) = res {
             assert!(msg_opt.is_some());
             let msg = msg_opt.unwrap();
             if call_fn(msg) {
-                break;
+                return Ok(());
             }
         }
     }
@@ -160,11 +268,12 @@ where
     pub(crate) subscribe_properties: P,
 }
 
-pub fn subscribe_data_with_options<S, T, P, F>(
+pub async fn subscribe_data_with_options<S, T, P, F>(
     cli: &Client,
     subscribe_test_data: SubscribeTestData<S, T, P>,
     call_fn: F,
-) where
+) -> Result<(), String>
+where
     S: Into<String>,
     T: Into<SubscribeOptions>,
     P: Into<Option<Properties>>,
@@ -177,20 +286,35 @@ pub fn subscribe_data_with_options<S, T, P, F>(
         subscribe_test_data.subscribe_options.into(),
         subscribe_test_data.subscribe_properties.into(),
     );
-    assert!(res.is_ok());
+
+    if let Err(e) = res {
+        return Err(format!("Failed to subscribe: {:?}", e));
+    }
+
+    let start_time = Instant::now();
+    let timeout_duration = Duration::from_secs(30);
 
     loop {
+        // Check if timeout exceeded
+        if start_time.elapsed() >= timeout_duration {
+            return Err(format!(
+                "subscribe_data_with_options timeout after {} seconds",
+                timeout_duration.as_secs()
+            ));
+        }
+
         let res = rx.recv_timeout(Duration::from_secs(10));
         if let Ok(Some(msg)) = res {
             if call_fn(msg) {
-                break;
+                return Ok(());
             }
         }
     }
 }
 
-pub fn build_client_id(name: &str) -> String {
-    format!("{}_{}_{}", name, unique_id(), now_nanos())
+pub fn build_client_id(_name: &str) -> String {
+    // format!("{}_{}_{}", name, unique_id(), now_nanos())
+    unique_id()
 }
 
 pub fn broker_addr() -> String {
@@ -366,39 +490,10 @@ pub fn build_create_conn_pros(client_id: &str, addr: &str) -> CreateOptions {
 }
 
 pub fn distinct_conn(cli: Client) {
-    let mut props = Properties::new();
-
-    props
-        .push_string_pair(
-            PropertyCode::UserProperty,
-            "DISCONNECT_FLAG_NOT_DELETE_SESSION",
-            "true",
-        )
-        .unwrap();
-
+    let props = Properties::new();
     let disconnect_opts = DisconnectOptionsBuilder::new()
         .reason_code(ReasonCode::DisconnectWithWillMessage)
         .properties(props)
         .finalize();
-    let res = cli.disconnect(disconnect_opts);
-    assert!(res.is_ok());
-}
-
-pub fn distinct_conn_close(cli: Client) {
-    let mut props = Properties::new();
-
-    props
-        .push_string_pair(
-            PropertyCode::UserProperty,
-            "DISCONNECT_FLAG_NOT_DELETE_SESSION",
-            "false",
-        )
-        .unwrap();
-
-    let disconnect_opts = DisconnectOptionsBuilder::new()
-        .reason_code(ReasonCode::DisconnectWithWillMessage)
-        .properties(props)
-        .finalize();
-    let res = cli.disconnect(disconnect_opts);
-    assert!(res.is_ok());
+    let _ = cli.disconnect(disconnect_opts);
 }

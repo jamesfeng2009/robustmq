@@ -26,4 +26,5 @@ pub mod runtime;
 pub mod telemetry;
 pub mod tools;
 pub mod utils;
+pub mod uuid;
 pub mod version;

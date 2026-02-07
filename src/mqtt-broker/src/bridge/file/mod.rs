@@ -14,8 +14,8 @@
 
 use super::core::{run_connector_loop, BridgePluginReadConfig, BridgePluginThread, ConnectorSink};
 use super::manager::ConnectorManager;
-use crate::handler::error::MqttBrokerError;
-use crate::handler::tool::ResultMqttBrokerError;
+use crate::core::error::MqttBrokerError;
+use crate::core::tool::ResultMqttBrokerError;
 use axum::async_trait;
 use chrono::{DateTime, Local, Timelike};
 use grpc_clients::pool::ClientPool;
@@ -187,9 +187,7 @@ impl ConnectorSink for FileBridgePlugin {
         Ok(())
     }
 
-    async fn init_sink(
-        &self,
-    ) -> Result<Self::SinkResource, crate::handler::error::MqttBrokerError> {
+    async fn init_sink(&self) -> Result<Self::SinkResource, crate::core::error::MqttBrokerError> {
         FileWriter::new(self.config.clone()).await
     }
 
@@ -261,7 +259,8 @@ pub fn start_local_file_connector(
 
 #[cfg(test)]
 mod tests {
-    use common_base::tools::{now_second, unique_id};
+    use common_base::tools::now_second;
+    use common_base::uuid::unique_id;
     use grpc_clients::pool::ClientPool;
     use metadata_struct::{
         mqtt::bridge::{

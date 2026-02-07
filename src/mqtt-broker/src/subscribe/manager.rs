@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    handler::sub_exclusive::is_exclusive_sub,
+    core::sub_exclusive::is_exclusive_sub,
     subscribe::{buckets::BucketsManager, common::Subscriber, parse::ParseSubscribeData},
 };
 use common_base::tools::now_second;
@@ -235,7 +235,7 @@ mod tests {
             filter: Filter {
                 path: path.to_string(),
                 qos: QoS::AtLeastOnce,
-                nolocal: true,
+                no_local: true,
                 preserve_retain: true,
                 retain_handling: RetainHandling::Never,
             },

@@ -14,11 +14,14 @@
 
 #[cfg(test)]
 mod tests {
-    use common_base::tools::unique_id;
-    use mqtt_broker::handler::constant::{
+    use std::time::Duration;
+
+    use common_base::uuid::unique_id;
+    use mqtt_broker::core::constant::{
         SUB_RETAIN_MESSAGE_PUSH_FLAG, SUB_RETAIN_MESSAGE_PUSH_FLAG_VALUE,
     };
     use paho_mqtt::{Message, MessageBuilder, PropertyCode};
+    use tokio::time::sleep;
 
     use crate::mqtt::protocol::{
         common::{
@@ -56,6 +59,7 @@ mod tests {
                 .finalize();
             publish_data(&cli, msg, false);
 
+            sleep(Duration::from_secs(3)).await;
             // subscribe
             let call_fn = |msg: Message| {
                 let payload = String::from_utf8(msg.payload().to_vec()).unwrap();
@@ -74,7 +78,7 @@ mod tests {
                 false
             };
 
-            subscribe_data_by_qos(&cli, &topic, qos, call_fn);
+            subscribe_data_by_qos(&cli, &topic, qos, call_fn).unwrap();
             distinct_conn(cli);
         }
     }

@@ -567,8 +567,8 @@ pub enum ConnectReturnCode {
     ConnectionRateExceeded,
 
     // MQTT 3/4
-    RefusedProtocolVersion,
-    BadClientId,
+    UnacceptableProtocolVersion,
+    IdentifierRejected,
     ServiceUnavailable,
 }
 
@@ -809,7 +809,7 @@ impl fmt::Display for PubRecProperties {
 //--------------------------- PubRel packet -------------------------------
 
 /// Publish release in response to PubRec packet as QoS 2
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PubRel {
     pub pkid: u16,
     pub reason: Option<PubRelReason>,
@@ -907,7 +907,7 @@ pub struct Filter {
     pub qos: QoS,
 
     // the following options are only valid in mqtt v5
-    pub nolocal: bool,
+    pub no_local: bool,
     pub preserve_retain: bool,
     pub retain_handling: RetainHandling,
 }

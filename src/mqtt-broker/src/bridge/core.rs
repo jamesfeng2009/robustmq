@@ -14,7 +14,7 @@
 
 use crate::{
     bridge::failure::failure_message_process,
-    handler::{error::MqttBrokerError, tool::ResultMqttBrokerError},
+    core::{error::MqttBrokerError, tool::ResultMqttBrokerError},
     storage::connector::ConnectorStorage,
 };
 use axum::async_trait;
@@ -82,8 +82,7 @@ pub trait ConnectorSink: Send + Sync {
 
     async fn validate(&self) -> ResultMqttBrokerError;
 
-    async fn init_sink(&self)
-        -> Result<Self::SinkResource, crate::handler::error::MqttBrokerError>;
+    async fn init_sink(&self) -> Result<Self::SinkResource, crate::core::error::MqttBrokerError>;
 
     async fn send_batch(
         &self,
@@ -540,7 +539,8 @@ fn stop_thread(thread: BridgePluginThread) -> ResultMqttBrokerError {
 mod tests {
     use super::*;
     use crate::bridge::manager::ConnectorManager;
-    use common_base::tools::{now_second, unique_id};
+    use common_base::tools::now_second;
+    use common_base::uuid::unique_id;
     use common_config::{broker::init_broker_conf_by_config, config::BrokerConfig};
     use metadata_struct::mqtt::bridge::connector::FailureHandlingStrategy;
     use metadata_struct::mqtt::bridge::{

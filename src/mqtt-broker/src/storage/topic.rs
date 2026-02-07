@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::handler::error::MqttBrokerError;
-use crate::handler::tool::ResultMqttBrokerError;
+use crate::core::error::MqttBrokerError;
+use crate::core::tool::ResultMqttBrokerError;
 use common_config::broker::broker_config;
 use dashmap::DashMap;
 use grpc_clients::meta::mqtt::call::{
@@ -99,13 +99,13 @@ impl TopicStorage {
     // retain message
     pub async fn set_retain_message(
         &self,
-        topic_name: String,
+        topic_name: &str,
         retain_message: &MqttMessage,
         retain_message_expired_at: u64,
     ) -> ResultMqttBrokerError {
         let config = broker_config();
         let request = SetTopicRetainMessageRequest {
-            topic_name,
+            topic_name: topic_name.to_string(),
             retain_message: Some(retain_message.encode()?.to_vec()),
             retain_message_expired_at,
         };
@@ -118,10 +118,10 @@ impl TopicStorage {
         Ok(())
     }
 
-    pub async fn delete_retain_message(&self, topic_name: String) -> ResultMqttBrokerError {
+    pub async fn delete_retain_message(&self, topic_name: &str) -> ResultMqttBrokerError {
         let config = broker_config();
         let request = SetTopicRetainMessageRequest {
-            topic_name,
+            topic_name: topic_name.to_owned(),
             retain_message: None,
             retain_message_expired_at: 0,
         };

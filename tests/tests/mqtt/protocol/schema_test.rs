@@ -19,7 +19,7 @@ mod tests {
         CreateSchemaBindReq, CreateSchemaReq, DeleteSchemaBindReq, DeleteSchemaReq,
     };
     use apache_avro::{Schema, Writer};
-    use common_base::tools::unique_id;
+    use common_base::uuid::unique_id;
     use paho_mqtt::{Message, QOS_1};
     use serde::{Deserialize, Serialize};
     use serde_json::json;
@@ -64,8 +64,6 @@ mod tests {
             mqtt_version: 5,
             client_id: client_id.to_string(),
             addr: broker_addr_by_type(network),
-            ws: ws_by_type(network),
-            ssl: ssl_by_type(network),
             ..Default::default()
         };
         let cli = connect_server(&client_properties);

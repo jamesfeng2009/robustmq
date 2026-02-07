@@ -30,7 +30,7 @@ use super::{
     write_topic_data, SYSTEM_TOPIC_BROKERS_CONNECTED, SYSTEM_TOPIC_BROKERS_DISCONNECTED,
     SYSTEM_TOPIC_BROKERS_SUBSCRIBED, SYSTEM_TOPIC_BROKERS_UNSUBSCRIBED,
 };
-use crate::handler::cache::MQTTCacheManager;
+use crate::core::cache::MQTTCacheManager;
 
 #[derive(Clone)]
 pub struct StReportDisconnectedEventContext {
@@ -98,14 +98,14 @@ pub struct SystemTopicDisConnectedEventMessage {
 pub struct SystemTopicSubscribedEventMessage {
     pub username: String,
     pub ts: u128,
-    pub subopts: SystemTopicSubscribedEventMessageSUbopts,
+    pub subopts: SystemTopicSubscribedEventMessageSupports,
     pub topic: String,
     pub protocol: String,
     pub client_id: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
-pub struct SystemTopicSubscribedEventMessageSUbopts {
+pub struct SystemTopicSubscribedEventMessageSupports {
     pub sub_props: HashMap<String, String>,
     pub rh: u16,
     pub rap: u8,
@@ -138,14 +138,14 @@ pub struct StReportConnectedEventContext {
 pub async fn st_report_connected_event(context: StReportConnectedEventContext) {
     if let Some(network_connection) = context.connection_manager.get_connect(context.connect_id) {
         let event_data = SystemTopicConnectedEventMessage {
-            username: context.connection.login_user.clone(),
+            username: context.connection.login_user.unwrap_or_default(),
             ts: now_millis(),
             sock_port: network_connection.addr.port(),
             proto_ver: Some(network_connection.protocol.unwrap().to_mqtt()),
             proto_name: "MQTT".to_string(),
             keepalive: context.connection.keep_alive,
             ip_address: context.connection.source_ip_addr.clone(),
-            expiry_interval: context.session.session_expiry,
+            expiry_interval: context.session.session_expiry_interval,
             connected_at: now_millis(),
             connect_ack: 1,
             client_id: context.session.client_id.to_string(),
@@ -182,7 +182,7 @@ pub async fn st_report_connected_event(context: StReportConnectedEventContext) {
 pub async fn st_report_disconnected_event(context: StReportDisconnectedEventContext) {
     if let Some(network_connection) = context.connection_manager.get_connect(context.connect_id) {
         let event_data = SystemTopicDisConnectedEventMessage {
-            username: context.connection.login_user.clone(),
+            username: context.connection.login_user.unwrap_or_default(),
             ts: now_millis(),
             sock_port: network_connection.addr.port(),
             reason: format!("{:?}", context.reason),
@@ -222,18 +222,19 @@ pub async fn st_report_disconnected_event(context: StReportDisconnectedEventCont
 
 // Subscribe to events. When any client subscribes to a topic, messages for that topic are published
 pub async fn st_report_subscribed_event(context: StReportSubscribedEventContext) {
+    let username = context.connection.login_user.unwrap_or_default();
     if let Some(network_connection) = context.connection_manager.get_connect(context.connect_id) {
         for filter in context.subscribe.filters.clone() {
-            let subopts = SystemTopicSubscribedEventMessageSUbopts {
+            let subopts = SystemTopicSubscribedEventMessageSupports {
                 sub_props: HashMap::new(),
                 rh: if filter.preserve_retain { 1 } else { 0 },
                 rap: filter.retain_handling.into(),
                 qos: filter.qos.into(),
-                nl: if filter.nolocal { 1 } else { 0 },
+                nl: if filter.no_local { 1 } else { 0 },
                 is_new: true,
             };
             let event_data = SystemTopicSubscribedEventMessage {
-                username: context.connection.login_user.clone(),
+                username: username.clone(),
                 ts: now_millis(),
                 subopts,
                 topic: filter.path,
@@ -270,10 +271,11 @@ pub async fn st_report_subscribed_event(context: StReportSubscribedEventContext)
 
 // Unsubscribe from an event. When any client unsubscribes to a topic, messages for that topic are published
 pub async fn st_report_unsubscribed_event(context: StReportUnsubscribedEventContext) {
+    let username = context.connection.login_user.unwrap_or_default();
     if let Some(network_connection) = context.connection_manager.get_connect(context.connect_id) {
         for path in context.un_subscribe.filters.clone() {
             let event_data = SystemTopicUnSubscribedEventMessage {
-                username: context.connection.login_user.clone(),
+                username: username.clone(),
                 ts: now_millis(),
                 topic: path,
                 protocol: format!("{:?}", network_connection.protocol),

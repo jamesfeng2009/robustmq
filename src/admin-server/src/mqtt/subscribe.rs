@@ -22,7 +22,7 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use mqtt_broker::{
-    handler::sub_share::{decode_share_info, is_mqtt_share_subscribe, is_share_sub_leader},
+    core::sub_share::{decode_share_info, is_mqtt_share_subscribe, is_share_sub_leader},
     subscribe::common::Subscriber,
 };
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ use common_base::{
 };
 use metadata_struct::mqtt::auto_subscribe_rule::MqttAutoSubscribeRule;
 use mqtt_broker::{
-    handler::error::MqttBrokerError,
+    core::error::MqttBrokerError,
     storage::{auto_subscribe::AutoSubscribeStorage, local::LocalStorage},
 };
 use protocol::mqtt::common::{qos, retain_forward_rule};
@@ -192,7 +192,7 @@ pub async fn subscribe_list(
             broker_id: sub.broker_id,
             client_id: sub.client_id.clone(),
             create_time: timestamp_to_local_datetime(sub.create_time as i64),
-            no_local: if sub.filter.nolocal { 1 } else { 0 },
+            no_local: if sub.filter.no_local { 1 } else { 0 },
             path: sub.path.clone(),
             pk_id: sub.pkid as u32,
             preserve_retain: if sub.filter.preserve_retain { 1 } else { 0 },

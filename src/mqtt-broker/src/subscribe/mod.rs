@@ -25,7 +25,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::{
-    handler::cache::MQTTCacheManager,
+    core::cache::MQTTCacheManager,
     subscribe::{
         buckets::SubPushThreadData, directly_push::DirectlyPushManager, manager::SubscribeManager,
         share_push::SharePushManager,
@@ -147,9 +147,9 @@ impl PushManager {
                 );
 
                 let stop_sx = sub_thread_stop_sx.clone();
-                tokio::spawn(async move {
+                tokio::spawn(Box::pin(async move {
                     push_manager.start(&stop_sx).await;
-                });
+                }));
 
                 self.directly_buckets_push_thread
                     .insert(bucket_id, thread_data);

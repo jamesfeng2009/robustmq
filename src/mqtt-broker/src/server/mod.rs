@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::handler::command::create_command;
-use crate::handler::tool::ResultMqttBrokerError;
+use crate::core::command::create_command;
+use crate::core::retain::RetainMessageManager;
+use crate::core::tool::ResultMqttBrokerError;
 use crate::{
-    handler::{cache::MQTTCacheManager, command::CommandContext},
+    core::{cache::MQTTCacheManager, command::CommandContext},
     security::AuthDriver,
     subscribe::manager::SubscribeManager,
 };
@@ -53,6 +54,7 @@ pub struct TcpServerContext {
     pub storage_driver_manager: Arc<StorageDriverManager>,
     pub delay_message_manager: Arc<DelayMessageManager>,
     pub schema_manager: Arc<SchemaRegisterManager>,
+    pub retain_message_manager: Arc<RetainMessageManager>,
     pub client_pool: Arc<ClientPool>,
     pub stop_sx: broadcast::Sender<bool>,
     pub auth_driver: Arc<AuthDriver>,
@@ -74,6 +76,7 @@ impl Server {
             auth_driver: context.auth_driver.clone(),
             rocksdb_engine_handler: context.rocksdb_engine_handler.clone(),
             broker_cache: context.broker_cache.clone(),
+            retain_message_manager: context.retain_message_manager.clone(),
         };
         let command = create_command(command_context);
 

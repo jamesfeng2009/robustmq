@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::handler::cache::MQTTCacheManager;
-use crate::handler::error::MqttBrokerError;
-use crate::handler::tool::ResultMqttBrokerError;
+use crate::core::cache::MQTTCacheManager;
+use crate::core::error::MqttBrokerError;
+use crate::core::tool::ResultMqttBrokerError;
 use crate::security::auth::blacklist::is_blacklist;
 use crate::security::auth::is_allow_acl;
 use crate::security::login::http::http_check_login;
@@ -45,8 +45,8 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use storage::http::HttpAuthStorageAdapter;
+use storage::meta::MetaServiceAuthStorageAdapter;
 use storage::mysql::MySQLAuthStorageAdapter;
-use storage::placement::PlacementAuthStorageAdapter;
 use storage::postgresql::PostgresqlAuthStorageAdapter;
 use storage::redis::RedisAuthStorageAdapter;
 
@@ -64,7 +64,7 @@ impl AuthDriver {
     pub fn new(cache_manager: Arc<MQTTCacheManager>, client_pool: Arc<ClientPool>) -> AuthDriver {
         let conf = broker_config();
 
-        let driver = match build_driver(client_pool, &conf.mqtt_auth_config.authn_config) {
+        let driver = match build_auth_driver(client_pool, &conf.mqtt_auth_config.authn_config) {
             Ok(driver) => driver,
             Err(e) => {
                 panic!("{}, auth config:{:?}", e, conf.mqtt_auth_config);
@@ -203,7 +203,7 @@ impl AuthDriver {
         topic_name: &str,
         retain: bool,
         qos: QoS,
-    ) -> bool {
+    ) -> Result<(), MqttBrokerError> {
         if !is_allow_acl(
             &self.cache_manager,
             connection,
@@ -213,7 +213,7 @@ impl AuthDriver {
             qos,
         ) {
             record_mqtt_acl_failed();
-            return false;
+            return Err(MqttBrokerError::NotAclAuth(topic_name.to_string()));
         }
         record_mqtt_acl_success();
 
@@ -221,10 +221,10 @@ impl AuthDriver {
         // default true if blacklist check fails
         if is_blacklist(&self.cache_manager, connection).unwrap_or(true) {
             record_mqtt_blacklist_blocked();
-            return false;
+            return Err(MqttBrokerError::NotBlacklistAuth);
         }
 
-        true
+        Ok(())
     }
 
     pub async fn auth_subscribe_check(
@@ -352,7 +352,7 @@ impl AuthDriver {
     }
 }
 
-pub fn build_driver(
+fn build_auth_driver(
     client_pool: Arc<ClientPool>,
     authn_config: &AuthnConfig,
 ) -> Result<Arc<dyn AuthStorageAdapter + Send + 'static + Sync>, MqttBrokerError> {
@@ -368,7 +368,7 @@ pub fn build_driver(
         "jwt" => {
             // JWT authentication doesn't need specific storage adapter (pure token validation)
             // But we still create a minimal adapter to maintain API compatibility
-            let driver = PlacementAuthStorageAdapter::new(client_pool);
+            let driver = MetaServiceAuthStorageAdapter::new(client_pool);
             Ok(Arc::new(driver))
         }
         _ => Err(MqttBrokerError::UnsupportedAuthType(
@@ -387,7 +387,7 @@ fn build_storage_driver(
     match storage_type {
         AuthType::Placement => {
             // Placement adapter only needs client_pool parameter
-            let driver = PlacementAuthStorageAdapter::new(client_pool);
+            let driver = MetaServiceAuthStorageAdapter::new(client_pool);
             Ok(Arc::new(driver))
         }
         AuthType::Mysql => {

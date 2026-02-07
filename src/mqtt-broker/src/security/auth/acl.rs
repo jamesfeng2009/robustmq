@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    handler::cache::MQTTCacheManager,
+    core::cache::MQTTCacheManager,
     security::auth::common::{ip_match, topic_match},
 };
 use common_base::enum_type::mqtt::acl::mqtt_acl_action::MqttAclAction;
@@ -27,12 +27,9 @@ pub fn is_acl_deny(
     topic_name: &str,
     action: MqttAclAction,
 ) -> bool {
+    let user = connection.login_user.clone().unwrap_or_default();
     // check user acl
-    if let Some(acl_list) = cache_manager
-        .acl_metadata
-        .acl_user
-        .get(&connection.login_user)
-    {
+    if let Some(acl_list) = cache_manager.acl_metadata.acl_user.get(&user) {
         return check_for_deny(&acl_list, &action, topic_name, &connection.source_ip_addr);
     }
 
@@ -69,9 +66,9 @@ fn check_for_deny(
 #[cfg(test)]
 mod test {
     use super::is_acl_deny;
-    use crate::handler::cache::MQTTCacheManager;
-    use crate::handler::constant::WILDCARD_RESOURCE;
-    use crate::handler::tool::test_build_mqtt_cache_manager;
+    use crate::core::cache::MQTTCacheManager;
+    use crate::core::constant::WILDCARD_RESOURCE;
+    use crate::core::tool::test_build_mqtt_cache_manager;
     use common_base::enum_type::mqtt::acl::mqtt_acl_action::MqttAclAction;
     use common_base::enum_type::mqtt::acl::mqtt_acl_permission::MqttAclPermission;
     use common_base::enum_type::mqtt::acl::mqtt_acl_resource_type::MqttAclResourceType;
@@ -109,6 +106,7 @@ mod test {
             request_problem_info: 1,
             keep_alive: 2,
             source_ip_addr: local_hostname(),
+            clean_session: true,
         };
         let mut connection = MQTTConnection::new(config);
         connection.login_success(user.username.clone());

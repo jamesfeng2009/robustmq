@@ -16,7 +16,7 @@ use crate::mqtt::pub_sub::{connect_server5, error_info};
 use crate::mqtt::pub_sub::{PublishArgsRequest, SubscribeArgsRequest};
 use admin_server::client::AdminHttpClient;
 use admin_server::mqtt::session::SessionListRow;
-use common_base::tools::unique_id;
+use common_base::uuid::unique_id;
 use paho_mqtt::{DisconnectOptionsBuilder, MessageBuilder, Properties, PropertyCode, ReasonCode};
 use prettytable::{row, Table};
 
@@ -722,11 +722,7 @@ impl MqttBrokerCommand {
             connection_id: None,
             limit: Some(DEFAULT_PAGE_SIZE),
             page: Some(DEFAULT_PAGE_NUM),
-            sort_field: None,
-            sort_by: None,
-            filter_field: None,
-            filter_values: None,
-            exact_match: None,
+            ..Default::default()
         };
 
         match admin_client
@@ -1468,8 +1464,7 @@ impl MqttBrokerCommand {
             .get_cluster_overview::<admin_server::mqtt::overview::OverViewResp>()
             .await
         {
-            Ok(overview) => {
-                let data = overview.data;
+            Ok(data) => {
                 println!("\n📊 Cluster Overview");
                 println!("{:<30} {}", "Cluster Name", data.cluster_name);
                 println!("{:<30} {}", "Placement Status", data.placement_status);

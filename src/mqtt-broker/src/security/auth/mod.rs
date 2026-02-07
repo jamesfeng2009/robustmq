@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::handler::cache::MQTTCacheManager;
+use crate::core::cache::MQTTCacheManager;
 use crate::security::auth::acl::is_acl_deny;
 use crate::security::auth::super_user::is_super_user;
 use common_base::enum_type::mqtt::acl::mqtt_acl_action::MqttAclAction;
@@ -34,8 +34,9 @@ pub fn is_allow_acl(
     retain: bool,
     _: QoS,
 ) -> bool {
+    let user = connection.login_user.clone().unwrap_or_default();
     // check super user
-    if is_super_user(cache_manager, &connection.login_user) {
+    if is_super_user(cache_manager, &user) {
         return true;
     }
 
